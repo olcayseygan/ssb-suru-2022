@@ -3,7 +3,7 @@ agentsofglory:
       envname: RayEnv
       env:
         seed: 450
-        n_envs: 2
+        n_envs: 1
       framestack:
         n_stack: 4
       agent:

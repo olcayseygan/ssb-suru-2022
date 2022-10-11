@@ -1,4 +1,5 @@
 import random
+from argparse import Namespace
 from enum import Enum
 
 import numpy as np
@@ -175,7 +176,18 @@ class TruckUnit(Unit):
     def get_available_directions(self, world) -> list[int]:
         return super().get_available_directions(world)
 
+    def has_space(self) -> bool:
+        return self.load < self._max_load
 
+    def is_on_resource(self, resources: tuple[int, int]) -> bool:
+        for resource in resources:
+            if self.location == resource:
+                return True
+
+        return False
+
+    def get_nearest_resources(self, resources: tuple[int, int]) -> list[tuple[int, int]]:
+        pass
 class DroneUnit(Unit):
     _cost: int = 1
     _attack: int = 1
@@ -246,7 +258,7 @@ class EvaluationAgent(Env):
     observation_space: spaces.Box
     action_space: spaces.Discrete
 
-    def __init__(self, kwargs: dict[str, any], agents: list[str]) -> None:
+    def __init__(self, kwargs: Namespace, agents: list[str]) -> None:
         super().__init__()
         self.__game = Game(kwargs, agents)
         self.__world = World(0, 1)
@@ -376,7 +388,7 @@ class EvaluationAgent(Env):
 
         return unit
 
-    def __action(self):
+    def action(self):
         self.__world.clear()
 
         self.__world.terrain = self.__state["terrain"]
@@ -399,13 +411,36 @@ class EvaluationAgent(Env):
             if len(available_directions) == 0:
                 continue
 
+            movement_offsets = get_movement_offsets(blue_unit.location)
             direction = random.choice(available_directions)
-            X, Y = calculate_location_by_offset(
-                get_movement_offsets(blue_unit.location)[direction], blue_unit.location)
-            self.__world.reserved_locations.append((Y, X))
             locations.append(blue_unit.location)
-            movements.append(direction)
-            targets.append(self.__world.red_team.base_location)
+            found = False
+            if isinstance(blue_unit, TruckUnit):
+                for resource in self.__world.resources:
+                    for available_direction in available_directions:
+                        X, Y = calculate_location_by_offset(
+                            movement_offsets[available_direction], blue_unit.location)
+                        if resource == blue_unit.location:
+                            movements.append(0)
+                            targets.append(resource)
+                            found = True
+                        elif (Y, X) == resource:
+                            movements.append(available_direction)
+                            targets.append(resource)
+                            found = True
+
+                        if found:
+                            break
+
+                    if found:
+                        break
+
+            if not found:
+                X, Y = calculate_location_by_offset(
+                    movement_offsets[direction], blue_unit.location)
+                self.__world.reserved_locations.append((Y, X))
+                movements.append(direction)
+                targets.append(self.__world.red_team.base_location)
 
         assert all(len(x) <= self.__ACTION_LENGTH for x in [
                    locations, movements, targets])
@@ -423,7 +458,7 @@ class EvaluationAgent(Env):
         return self.__flat_state(self.__state)
 
     def step(self, action):
-        action = self.__action()
+        action = self.action()
         self.__state, _, done = self.__game.step(action)
         self.__steps += 1
         return self.__flat_state(self.__state), 0, done, {}

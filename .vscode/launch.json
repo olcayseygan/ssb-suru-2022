@@ -10,7 +10,7 @@
       "request": "launch",
       "program": "src/sb3cadet.py",
       "console": "integratedTerminal",
-      "args": ["ResourceRiver", "EvaluationAgent", ""],
+      "args": ["ResourceRiver", "EvaluationAgent", "--render"],
       "justMyCode": true
     }
   ]
