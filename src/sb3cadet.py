@@ -85,6 +85,6 @@ if __name__ == "__main__":
                     tensorboard_log="logs",
                     **hyperparam["agent"])
 
-        model.learn(callback=[loggcallback, checkpoint_callback],
+        model.learn(callback=[checkpoint_callback],
                     tb_log_name=gamename,
                     **hyperparam["learn"])

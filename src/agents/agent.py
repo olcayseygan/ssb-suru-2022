@@ -1,4 +1,3 @@
-import random
 from argparse import Namespace
 from enum import Enum
 
@@ -30,6 +29,7 @@ TERRAIN_TAGS_BY_INDEX = {i: a.name for i, a in enumerate(TERRAIN_TAGS)}
 
 
 DIRECTION_OFFSETS_EVEN: dict[int, tuple[int, int]] = {
+    0: (0, 0),
     1: (-1, 0),
     2: (0, -1),
     3: (1, 0),
@@ -38,6 +38,7 @@ DIRECTION_OFFSETS_EVEN: dict[int, tuple[int, int]] = {
     6: (-1, 1),
 }
 DIRECTION_OFFSETS_ODD: dict[int, tuple[int, int]] = {
+    0: (0, 0),
     1: (-1, -1),
     2: (0, -1),
     3: (1, -1),
@@ -56,9 +57,9 @@ def get_movement_offsets(location: tuple[int, int]) -> tuple[int, int]:
 
 
 def calculate_location_by_offset(offset: int, location: tuple[int, int]) -> tuple[int, int]:
-    x, y = location[1], location[0]
-    x_offset, y_offset = offset[0], offset[1]
-    return (x + x_offset, y + y_offset)
+    y, x = location
+    x_offset, y_offset = offset
+    return (y + y_offset, x + x_offset)
 
 
 class Unit:
@@ -76,6 +77,8 @@ class Unit:
         TERRAIN_TAGS.WATER: False
     }
 
+    will_move = False
+
     hp: int = -1
     load: int = -1
     location: tuple[int, int] = (-1, -1)
@@ -92,7 +95,7 @@ class Unit:
         all_units = world.blue_team.units + world.red_team.units
         height, width = world.terrain.shape
         for direction, offset in get_movement_offsets(self.location).items():
-            X, Y = calculate_location_by_offset(offset, self.location)
+            Y, X = calculate_location_by_offset(offset, self.location)
             coordinate = (Y, X)
             if not (0 <= Y < height and 0 <= X < width):
                 continue
@@ -100,7 +103,7 @@ class Unit:
             if coordinate in [*world.reserved_locations,
                               world.blue_team.base_location,
                               world.red_team.base_location,
-                              *[unit.location for unit in all_units]]:
+                              *[unit.location for unit in all_units if not unit.will_move]]:
                 continue
 
             if not self._can_move_on[TERRAIN_TAGS(world.terrain[Y][X])]:
@@ -126,12 +129,6 @@ class HeavyTankUnit(Unit):
         TERRAIN_TAGS.WATER: False
     }
 
-    def __init__(self, hp: int, load: int, location: tuple[int, int], tag: UNIT_TAGS) -> None:
-        super().__init__(hp, load, location, tag)
-
-    def get_available_directions(self, world) -> list[int]:
-        return super().get_available_directions(world)
-
 
 class LightTankUnit(Unit):
     _cost: int = 1
@@ -147,12 +144,6 @@ class LightTankUnit(Unit):
         TERRAIN_TAGS.MOUNTAIN: False,
         TERRAIN_TAGS.WATER: False
     }
-
-    def __init__(self, hp: int, load: int, location: tuple[int, int], tag: UNIT_TAGS) -> None:
-        super().__init__(hp, load, location, tag)
-
-    def get_available_directions(self, world) -> list[int]:
-        return super().get_available_directions(world)
 
 
 class TruckUnit(Unit):
@@ -173,9 +164,6 @@ class TruckUnit(Unit):
     def __init__(self, hp: int, load: int, location: tuple[int, int], tag: UNIT_TAGS) -> None:
         super().__init__(hp, load, location, tag)
 
-    def get_available_directions(self, world) -> list[int]:
-        return super().get_available_directions(world)
-
     def has_space(self) -> bool:
         return self.load < self._max_load
 
@@ -188,6 +176,20 @@ class TruckUnit(Unit):
 
     def get_nearest_resources(self, resources: tuple[int, int]) -> list[tuple[int, int]]:
         pass
+
+    def get_available_directions(self, world) -> list[int]:
+        available_directions = super().get_available_directions(world)
+        if 0 < self.load:
+            for direction, offset in get_movement_offsets(self.location).items():
+                Y, X = calculate_location_by_offset(offset, self.location)
+                coordinate = (Y, X)
+                if coordinate == world.blue_team.base_location:
+                    available_directions.append(direction)
+                    break
+
+        return available_directions
+
+
 class DroneUnit(Unit):
     _cost: int = 1
     _attack: int = 1
@@ -202,12 +204,6 @@ class DroneUnit(Unit):
         TERRAIN_TAGS.MOUNTAIN: True,
         TERRAIN_TAGS.WATER: True
     }
-
-    def __init__(self, hp: int, load: int, location: tuple[int, int], tag: UNIT_TAGS) -> None:
-        super().__init__(hp, load, location, tag)
-
-    def get_available_directions(self, world) -> list[int]:
-        return super().get_available_directions(world)
 
 
 class Team:
@@ -236,10 +232,16 @@ class World:
     def red_team(self) -> Team:
         return self.__red_team
 
+    height: int = -1
+    width: int = -1
+
     terrain: np.ndarray
     resources: np.ndarray
 
     reserved_locations: list[dict[int, int]] = []
+
+    def get_size(self) -> tuple[int, int]:
+        return self.height, self.width
 
     def clear(self):
         self.blue_team.units.clear()
@@ -263,13 +265,21 @@ class EvaluationAgent(Env):
         self.__game = Game(kwargs, agents)
         self.__world = World(0, 1)
 
+        self.__world.width = self.__game.map_x
+        self.__world.height = self.__game.map_y
+
+        height, width = self.__world.get_size()
         self.observation_space = spaces.Box(
             low=0,
             high=100,
-            shape=(1204,),
+            shape=(height * width * 10 + 4,),
             dtype=np.int8
         )
-        self.action_space = spaces.Discrete(8)
+        chunks = (
+            7,
+            7
+        ) * self.__ACTION_LENGTH
+        self.action_space = spaces.MultiDiscrete(chunks + (5,))
 
     def __flat_state(self, state):
         turn = state['turn']  # 1
@@ -388,7 +398,7 @@ class EvaluationAgent(Env):
 
         return unit
 
-    def action(self):
+    def action(self, chunks: list[tuple], train: int):
         self.__world.clear()
 
         self.__world.terrain = self.__state["terrain"]
@@ -404,47 +414,64 @@ class EvaluationAgent(Env):
         self.__world.red_team.base_location = decoded_state[self.__world.red_team.index + 2]
         self.__world.resources = decoded_state[4]
         locations, movements, targets, = [], [], []
-        train = 0
-        for blue_unit in self.__world.blue_team.units:
+
+        lower_bound = min(len(self.__world.blue_team.units), len(chunks))
+        for i in range(lower_bound):
+            blue_unit = self.__world.blue_team.units[i]
+            chunk = chunks[i]
             available_directions = blue_unit.get_available_directions(
                 self.__world)
             if len(available_directions) == 0:
                 continue
 
             movement_offsets = get_movement_offsets(blue_unit.location)
-            direction = random.choice(available_directions)
-            locations.append(blue_unit.location)
+            direction, target = chunk
+            if direction not in available_directions:
+                continue
+
+            target = calculate_location_by_offset(
+                movement_offsets[target], blue_unit.location)
+
             found = False
-            if isinstance(blue_unit, TruckUnit):
-                for resource in self.__world.resources:
-                    for available_direction in available_directions:
-                        X, Y = calculate_location_by_offset(
-                            movement_offsets[available_direction], blue_unit.location)
-                        if resource == blue_unit.location:
-                            movements.append(0)
-                            targets.append(resource)
-                            found = True
-                        elif (Y, X) == resource:
-                            movements.append(available_direction)
-                            targets.append(resource)
-                            found = True
+            # if isinstance(blue_unit, TruckUnit):
+            #     if blue_unit.has_space():
+            #         for resource, available_direction in [(resource, available_direction) for resource in self.__world.resources for available_direction in available_directions]:
+            #             Y, X = calculate_location_by_offset(
+            #                 movement_offsets[available_direction], blue_unit.location)
+            #             if resource == blue_unit.location:
+            #                 movement = 0
+            #                 target = resource
+            #                 break
+            #             elif (Y, X) == resource:
+            #                 movement = available_direction
+            #                 target = resource
+            #     else:
+            #         for available_direction in available_directions:
+            #             Y, X = calculate_location_by_offset(
+            #                 movement_offsets[available_direction], blue_unit.location)
+            #             if (Y, X) == self.__world.blue_team.base_location:
+            #                 movement = available_direction
+            #                 target = self.__world.blue_team.base_location
+            #                 break
 
-                        if found:
-                            break
+            # direction = random.choice(available_directions)
+            # if None in [movement, target]:
+            #     movement = direction
+            #     target = self.__world.red_team.base_location
 
-                    if found:
-                        break
-
-            if not found:
-                X, Y = calculate_location_by_offset(
+            if 0 < direction:
+                Y, X = calculate_location_by_offset(
                     movement_offsets[direction], blue_unit.location)
                 self.__world.reserved_locations.append((Y, X))
-                movements.append(direction)
-                targets.append(self.__world.red_team.base_location)
+
+            blue_unit.will_move = True
+            locations.append(blue_unit.location)
+            movements.append(direction)
+            targets.append(target)
 
         assert all(len(x) <= self.__ACTION_LENGTH for x in [
                    locations, movements, targets])
-        return (locations, movements, targets, 0)
+        return (locations, movements, targets, train)
 
     def setup(self, obs_spec, action_spec):
         self.observation_space = obs_spec
@@ -458,7 +485,9 @@ class EvaluationAgent(Env):
         return self.__flat_state(self.__state)
 
     def step(self, action):
-        action = self.action()
+        chunks = [action[:-1][i:i + 2] for i in range(0, len(action[:-1]), 2)]
+        train = action[-1]
+        action = self.action(chunks, train)
         self.__state, _, done = self.__game.step(action)
         self.__steps += 1
         return self.__flat_state(self.__state), 0, done, {}
