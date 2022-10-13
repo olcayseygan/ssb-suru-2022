@@ -8,9 +8,13 @@
       "name": "Python: Current File",
       "type": "python",
       "request": "launch",
-      "program": "src/sb3cadet.py",
       "console": "integratedTerminal",
-      "args": ["ResourceRiver", "EvaluationAgent", "--render"],
+      // "program": "src/agentsofglory.py",
+      // "args": ["TrainSingleMixedSmall", "RandomAgent", "RandomAgent", "--render"],
+      "program": "src/sb3cadet.py",
+      "args": ["TrainSingleTruckSmall", "RandomAgent", "--render"],
+      // "program": "src/test.py",
+      // "args": ["--render"],
       "justMyCode": true
     }
   ]

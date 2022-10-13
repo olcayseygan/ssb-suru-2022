@@ -6,7 +6,7 @@ from stable_baselines3.common import logger
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
-from agents.agent import EvaluationAgent
+from agents.agent import TrainAgent
 
 
 def read_hypers():
@@ -75,16 +75,16 @@ if __name__ == "__main__":
             [("hypers", hyperparam)]
         )
 
-        env = SubprocVecEnv([lambda: EvaluationAgent(args, agents)
+        env = SubprocVecEnv([lambda: TrainAgent(args, agents)
                              for i in range(hyperparam["env"]["n_envs"])])
-        checkpoint_callback = CheckpointCallback(save_freq=100000, save_path='./models/singletruckst',
-                                                 name_prefix='tsts')
+        checkpoint_callback = CheckpointCallback(save_freq=10000, save_path='./models/singletruckst',
+                                                 name_prefix='TrainSingleTruckSmall')
 
         model = A2C(env=env,
                     verbose=1,
                     tensorboard_log="logs",
                     **hyperparam["agent"])
 
-        model.learn(callback=[checkpoint_callback],
+        model.learn(callback=[loggcallback, checkpoint_callback],
                     tb_log_name=gamename,
                     **hyperparam["learn"])

@@ -1,4 +1,5 @@
 
+from data.inputs.agent import EvaluationAgent
 import argparse
 import json
 import os
@@ -7,12 +8,14 @@ import sys
 import numpy as np
 from gym import spaces
 
-from agents.agent import EvaluationAgent
-from game import Game
+from src.game import Game
 
 inputDirectory = '/data/inputs'
 outputDirectory = '/data/outputs'
 sys.path.append(inputDirectory)
+
+
+# from ..data.inputs.agent import EvaluationAgent
 
 
 class Evaluator():
@@ -38,7 +41,7 @@ class Evaluator():
             rewards = []
             while not done:
                 action = self.agent.act(state)
-                state, reward, done = self.game.step(action)
+                state, reward, done, _ = self.game.step(action)
                 rewards.append(reward)
 
             eps_rewards.append(sum(rewards))
@@ -67,7 +70,7 @@ data = {
 scores = []
 
 
-for index, (map, agent) in enumerate([("RiskyValley", "EvaluationAgent")]):
+for index, (map, agent) in enumerate([("RiskyValley", "RiskyValleyBot"), ("RiskyValleyNoDesert", "RiskyValleyNoDesert"), ("RiskyWaters", "RiskyWaters")]):
 
     agents = [None, agent]
     args.map = map
