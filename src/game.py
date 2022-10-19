@@ -134,6 +134,8 @@ class Game:
                     active_unit = u
                     break
             # print(active_unit.getTag()[0],ids[i],action[i],target[i])
+            if active_unit is None:
+                print(1)
             result = active_unit.moveAction(action[i], target[i])
             if self.render:
                 if action[i] == 0:
@@ -142,6 +144,7 @@ class Game:
                             [active_unit, target[i], result])
                 else:
                     self.move_animations.append(active_unit)
+        self.shoot_animations.clear()
         self.bases[self.go_team].trainUnit(train)
         self.go_team += 1
         self.turn += self.go_team//2

@@ -10,7 +10,7 @@
       "request": "launch",
       "console": "integratedTerminal",
       // "program": "src/agentsofglory.py",
-      // "args": ["TrainSingleMixedSmall", "RandomAgent", "RandomAgent", "--render"],
+      // "args": ["TrainSingleTruckSmall", "RandomAgent", "RandomAgent", "--render"],
       "program": "src/sb3cadet.py",
       "args": ["TrainSingleTruckSmall", "RandomAgent", "--render"],
       // "program": "src/test.py",

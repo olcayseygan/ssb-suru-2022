@@ -1,4 +1,4 @@
-max_turn: 100
+max_turn: 50
 turn_timer: 10
 map:
   x: 6

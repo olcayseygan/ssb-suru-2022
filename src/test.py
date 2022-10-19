@@ -67,7 +67,7 @@ data = {
 scores = []
 
 
-for index, (map, agent) in enumerate([("RiskyValley", "EvaluationAgent")]):
+for index, (map, agent) in enumerate([("ResourceRiver", "RandomAgent")]):
 
     agents = [None, agent]
     args.map = map

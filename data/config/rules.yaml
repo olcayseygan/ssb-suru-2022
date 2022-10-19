@@ -34,4 +34,4 @@ Terrain:
   wreckage_time: 5
 Animation:
   enabled: False
-  speed: 10
+  speed: 5

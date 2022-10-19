@@ -3,7 +3,7 @@ turn_timer: 20
 map:
   x: 12
   y: 10
-  terrain: 
+  terrain:
     - ['w', 'w', 'w', 'w', 'd', 'd', 'd', 'd', 'm', 'g', 'g', 'g']
     - ['w', 'w', 'w', 'w', 'd', 'd', 'd', 'd', 'm', 'g', 'g', 'g']
     - ['g', 'w', 'w', 'w', 'd', 'd', 'd', 'd', 'm', 'g', 'g', 'g']
