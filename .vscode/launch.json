@@ -10,9 +10,9 @@
       "request": "launch",
       "console": "integratedTerminal",
       // "program": "src/agentsofglory.py",
-      // "args": ["TrainSingleTruckSmall", "RandomAgent", "RandomAgent", "--render"],
+      // "args": ["RiskyValley", "Evaluatio?nAgent", "EvaluationAgent", "--render"],
       "program": "src/sb3cadet.py",
-      "args": ["TrainSingleTruckSmall", "RandomAgent", "--render"],
+      "args": ["TrainSingleTruckSmall", "RandomAgent", "--render", "--version=v1", "--prefix=TrainSingleTruckSmall"],
       // "program": "src/test.py",
       // "args": ["--render"],
       "justMyCode": true

@@ -1,7 +1,5 @@
 
 import argparse
-import json
-import os
 import sys
 
 import numpy as np
@@ -67,7 +65,7 @@ data = {
 scores = []
 
 
-for index, (map, agent) in enumerate([("ResourceRiver", "RandomAgent")]):
+for index, (map, agent) in enumerate([("RiskyValley", "EvaluationAgent")]):
 
     agents = [None, agent]
     args.map = map
@@ -86,5 +84,5 @@ for index, (map, agent) in enumerate([("ResourceRiver", "RandomAgent")]):
     scores.append(score)
 data["total_score"] = sum(scores)
 
-with open(os.path.join(outputDirectory, "output.json"), 'w') as outfile:
-    json.dump(data, outfile)
+# with open(os.path.join(outputDirectory, "output.json"), 'x') as outfile:
+#     json.dump(data, outfile)

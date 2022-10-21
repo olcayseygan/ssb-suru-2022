@@ -3,7 +3,7 @@ agentsofglory:
       envname: RayEnv
       env:
         seed: 450
-        n_envs: 1
+        n_envs: 3
       framestack:
         n_stack: 4
       agent:
@@ -18,5 +18,5 @@ agentsofglory:
         max_grad_norm: 0.5
         rms_prop_eps: 0.00001
       learn:
-        total_timesteps: !!float 1e7
+        total_timesteps: !!float 1e10
         log_interval: 100

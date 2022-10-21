@@ -6,6 +6,7 @@ import numpy as np
 from game import Game
 from gym import Env
 from gym.spaces import Box, MultiDiscrete
+from perlin_noise import PerlinNoise
 from stable_baselines3 import A2C
 from typing_extensions import Self
 
@@ -135,9 +136,9 @@ class Unit:
         DRONE = "Drone"
 
     def __init__(self, hp: int, load: int, location: tuple[int, int], tag: TAGS) -> None:
-        self._cost: int = -1
-        self._attack: int = -1
-        self._max_hp: int = -1
+        self._cost: int = -0
+        self._attack: int = 0
+        self._max_hp: int = 0
         self._heavy: bool = False
         self._fly: bool = False
         self._anti_air: bool = False
@@ -148,6 +149,10 @@ class Unit:
         self.tag = tag
         self.will_move = False
         self.going_tile: Tile = None
+
+    @property
+    def attack(self) -> int:
+        return self._attack
 
     @property
     def max_hp(self) -> int:
@@ -188,6 +193,12 @@ class Unit:
             available_directions.append(direction)
 
         return available_directions
+
+    def get_nearest_unit(self, units: list[Self]) -> Self:
+        return min(units, key=lambda unit: get_distance_between_two_locations(self.location, unit.location), default=None)
+
+    def get_units_in_range(self, units: list[Self], range: int = 3) -> list[Self]:
+        return [unit for unit in units if get_distance_between_two_locations(self.location, unit.location) <= range]
 
 
 class HeavyTankUnit(Unit):
@@ -303,6 +314,8 @@ class Team:
         self.units: list[Unit] = []
         self.base: Base = None
 
+    def find_unit(self, location: tuple[int, int]) -> Unit:
+        return next((unit for unit in self.units if unit.location == location), None)
 
 class Terrain:
     def __init__(self) -> None:
@@ -406,6 +419,84 @@ class World:
         self.opponent_team.units.clear()
         self.reserved_tiles.clear()
 
+    @staticmethod
+    def generate_random_world_config(height, width) -> np.ndarray:
+        def flip(arr):
+            return arr[::-1, ::-1]
+
+        terrain_characters = {
+            0: 'w',
+            1: 'd',
+            2: 'g',
+            3: 'm'
+        }
+
+        perlin = PerlinNoise(octaves=3)
+        noise = np.array([[perlin([i/width, j/height])
+                         for j in range(width)] for i in range(height // 2)])
+        normalized_noise = (noise - np.min(noise)) / \
+            (np.max(noise) - np.min(noise))
+
+        game_map = np.ndarray(normalized_noise.shape, dtype=int)
+        resource_map = np.zeros(game_map.shape, dtype=int)
+        base_map = np.zeros(game_map.shape, dtype=int)
+
+        game_map[0 <= normalized_noise] = 0
+        game_map[0.2 < normalized_noise] = 1
+        game_map[0.3 < normalized_noise] = 2
+        game_map[0.7 < normalized_noise] = 1
+        game_map[0.9 < normalized_noise] = 3
+
+        grasses = [(y, x) for y, row in enumerate(game_map)
+                   for x, col in enumerate(row) if col == 2]
+        if len(grasses) == 0:
+            return World.generate_random_world_config(height, width)
+
+        base_location = random.choice(grasses)
+        base_map[base_location] = 1
+
+        grasses.remove(base_location)
+        for (y, x) in random.choices(grasses, k=random.randint(0, len(grasses))):
+            resource_map[y, x] = 1
+
+        base_map = np.concatenate((-flip(base_map), base_map))
+        resource_map = np.concatenate((resource_map, flip(resource_map)))
+        game_map = np.concatenate((game_map, flip(game_map)))
+
+        blue_base_location_y, blue_base_location_x = np.array(
+            np.where(base_map == 1)).flatten()
+        red_base_location_y, red_base_location_x = np.array(
+            np.where(base_map == -1)).flatten()
+        return {
+            "max_turn": random.randint(32, 64),
+            "turn_timer": 10,
+            "map": {
+                "x": width,
+                "y": height,
+                "terrain": np.vectorize(terrain_characters.get)(game_map).tolist()
+            },
+            "red": {
+                "base": {
+                    "x": red_base_location_x,
+                    "y": red_base_location_y,
+                },
+                "units": []
+            },
+            "blue": {
+                "base": {
+                    "x": blue_base_location_x,
+                    "y": blue_base_location_y,
+                },
+                "units": []
+            },
+            "resources": [
+                {
+                    "x": x,
+                    "y": y
+                } for y, x in np.argwhere(resource_map == 1).tolist()
+            ]
+        }
+
 
 class BaseAgent():
     def _create_unit(self, entity: list[any]) -> Unit:
@@ -491,10 +582,13 @@ class BaseAgent():
         main_team_units = main_team.units
         opponent_team_units = opponent_team.units
         sorted_main_team_units = sorted(main_team_units, key=lambda unit: get_distance_between_two_locations(
-            main_team.base.location, unit.location))
+            main_team.base.location, unit.location), reverse=True)
 
-        # running for each unit
-        for unit in main_team_units:
+        # running for each unit with its index
+        for estimation_location, estimation in estimations.items():
+            unit = self._world.main_team.find_unit(estimation_location)
+            if unit is None:
+                continue
 
             # checking that there are some directions to action
             available_directions = unit.get_available_directions(
@@ -506,7 +600,6 @@ class BaseAgent():
             if len(available_directions) == 0:
                 continue
 
-            estimation = estimations[unit.location]
             direction, target = estimation["direction"], estimation["target"]
             if direction != 0 and direction not in available_directions:
                 continue
@@ -547,66 +640,32 @@ class BaseAgent():
             movements.append(direction)
             targets.append(target)
 
-        assert all(len(x) <= self.action_length for x in [
-                   locations, movements, targets])
+        # assert (all(len(x) <= self.action_length for x in [
+        #            locations, movements, targets]), f"{len(locations)}, {len(movements)}, {len(targets)}, {locations}, {movements}, {targets}")
         return (locations, movements, targets, recruitment)
 
-    def _flat_state(self, state: dict[str, any]):
-        turn = state['turn']  # 1
-        max_turn = state['max_turn']  # 1
-        units = state['units']
-        hps = state['hps']
-        bases = state['bases']
-        score = state['score']  # 2
-        res = state['resources']
-        load = state['loads']
-        terrain = state["terrain"]
-        y_max, x_max = res.shape
-        my_units = []
-        enemy_units = []
-        resources = []
-        for i in range(y_max):
-            for j in range(x_max):
-                if units[0][i][j] < 6 and units[0][i][j] != 0:
-                    my_units.append(
-                        {
-                            'unit': units[0][i][j],
-                            'tag': UNIT_TAGS_BY_INDEX[units[0][i][j] - 1],
-                            'hp': hps[0][i][j],
-                            'location': (i, j),
-                            'load': load[0][i][j]
-                        }
-                    )
-                if units[1][i][j] < 6 and units[1][i][j] != 0:
-                    enemy_units.append(
-                        {
-                            'unit': units[1][i][j],
-                            'tag': UNIT_TAGS_BY_INDEX[units[1][i][j] - 1],
-                            'hp': hps[1][i][j],
-                            'location': (i, j),
-                            'load': load[1][i][j]
-                        }
-                    )
-                if res[i][j] == 1:
-                    resources.append((i, j))
-                if bases[0][i][j]:
-                    my_base = (i, j)
-                if bases[1][i][j]:
-                    enemy_base = (i, j)
+    def _flat_state_2(self, state: dict[str, any]):
+        score: np.ndarray = np.array(state["score"], dtype=np.int8)
+        turn: int = state["turn"]
+        max_turn: int = state["max_turn"]
+        units: np.ndarray = np.array(state["units"], dtype=np.int8)
+        hps: np.ndarray = np.array(state["hps"], dtype=np.int8)
+        bases: np.ndarray = np.array(state["bases"], dtype=np.int8)
+        resources: np.ndarray = np.array(state["resources"], dtype=np.int8)
+        loads: np.ndarray = np.array(state["loads"], dtype=np.int8)
+        terrain: np.ndarray = np.array(state["terrain"], dtype=np.int8)
 
-        unitss = [*units[0].reshape(-1).tolist(),
-                  *units[1].reshape(-1).tolist()]
-        hpss = [*hps[0].reshape(-1).tolist(), *hps[1].reshape(-1).tolist()]
-        basess = [*bases[0].reshape(-1).tolist(),
-                  *bases[1].reshape(-1).tolist()]
-        ress = [*res.reshape(-1).tolist()]
-        loads = [*load[0].reshape(-1).tolist(), *load[1].reshape(-1).tolist()]
-        terr = [*terrain.reshape(-1).tolist()]
-
-        state = (*score.tolist(), turn, max_turn, *unitss,
-                 *hpss, *basess, *ress, *loads, *terr)
-
-        return np.array(state, dtype=np.int16)
+        return [
+            *score,
+            turn,
+            max_turn,
+            *(units[0] - units[1]).flatten(),
+            *(hps[0] - hps[1]).flatten(),
+            *(bases[0] - bases[1]).flatten(),
+            *resources.flatten(),
+            *(loads[0] - loads[1]).flatten(),
+            *terrain.flatten()
+        ]
 
     # Public:
     def __init__(self):
@@ -754,7 +813,7 @@ class BaseAgent():
 
 class TrainAgentEnv(BaseAgent, Env):
     def __world_to_dict(self, state: dict[str, any]) -> dict[str, any]:
-        self._set_ready_to_action(self.__state)
+        self._set_ready_to_action(state)
         return {
             "resources" : self._world.resources,
             "main": {
@@ -793,60 +852,56 @@ class TrainAgentEnv(BaseAgent, Env):
             }
         }
 
-
+    def __generate_world_config(self) -> dict[str, any]:
+        height, width =  self.__game.map_y, self.__game.map_x
+        self.__game.config = World.generate_random_world_config(height, width)
+        self.__game.max_turn = self.__game.config["max_turn"]
+        self.__game.turn_timer = self.__game.config["turn_timer"]
+        return self.__game.reset()
 
     def __init__(self, kwargs: Namespace, agents: list[str]) -> None:
         super().__init__()
         self.__previous_state: dict[str, any] = {}
-        self.__state: dict[str, any] = {}
-        self.__episodes: int = 0
-        self.__steps: int = 0
         self.__reward: float = 0.0
         self.__game = Game(kwargs, agents)
-        self._world = World(0, 1)
+        self.__state: dict[str, any] = self.__generate_world_config()
         height, width =  self.__game.map_y, self.__game.map_x
-        self._ASL: list[int] = [7,  height, width]
+        self._world = World(0, 1)
+        self._ASL: list[int] = [height, width, 7,  height, width]
         self._ASL_LENGTH: int = len(self._ASL)
         length = height * width
-        print(length)
         self.observation_space = Box(
             low=-2,
             high=401,
-            shape=(length * 10 + 4,),
+            shape=(length * 6 + 4,),
             dtype=np.int16
         )
         self.action_space = MultiDiscrete(np.array([
-            self._ASL for _ in range(length)
+            self._ASL for _ in range(self.action_length)
         ]).flatten().tolist() + [5])
-        # self.action_space = MultiDiscrete(
-        #     [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 5])
 
     def setup(self, observation_space: Box, action_space: MultiDiscrete):
         self.observation_space = observation_space
         self.action_space = action_space
 
     def reset(self):
-        self.__episodes += 1
-        self.__steps = 0
-        self.__state = self.__game.reset()
+        self.__state = self.__generate_world_config()
         self.__reward = 0.0
-        return self._flat_state(self.__state)
+        return self._flat_state_2(self.__state)
 
-    def step(self, sample: np.ndarray):
-        self.__steps += 1
+    def step(self, action: np.ndarray):
         self.__previous_state = self.__state
         previous_world: dict[str, any] = self.__world_to_dict(self.__previous_state)
-        pre_estimations = [sample[i:i+self._ASL_LENGTH] for i in range(0, len(sample[:-1]), self._ASL_LENGTH)][::-1]
+        pre_estimations = [action[i:i+self._ASL_LENGTH] for i in range(0, len(action[:-1]), self._ASL_LENGTH)][::-1]
         estimations: dict[tuple[int,int], dict[str, any]] = {}
-        for y in range(self._world.height):
-            for x in range(self._world.width):
-                direction, Y, X = pre_estimations.pop()
-                estimations[(y, x)] = {
-                    "direction": direction,
-                    "target": (Y, X)
-                }
+        for pre_estimation in pre_estimations:
+            y, x, direction, Y, X = pre_estimation
+            estimations[(y, x)] = {
+                "direction": direction,
+                "target": (Y, X)
+            }
 
-        recruitment = sample[-1]
+        recruitment = action[-1]
         self.__state, _, done = self.__game.step(self._action(estimations, recruitment))
         current_world: dict[str, any] = self.__world_to_dict(self.__state)
 
@@ -855,125 +910,61 @@ class TrainAgentEnv(BaseAgent, Env):
         for unit in previous_world["main"]["team"]["units"]["trucks"]:
             # reward += unit.load * 8
             if unit.is_resource_picked_up():
-                reward += 4
+                reward += 2
             elif unit.is_resource_delivered():
-                reward += 16
-
-            reward += unit.load * 2
+                reward += 8
 
             if unit.has_space():
-                distance_to_resource = get_distance_between_two_locations(unit.location, unit.get_nearest_resource(previous_world["resources"]).location)
-                reward += (1 - distance_to_resource / self._world.length) * 0.001 * unit.load
+                nearest_resource = unit.get_nearest_resource(previous_world["resources"])
+                if nearest_resource is not None:
+                    distance_to_resource = get_distance_between_two_locations(unit.location, nearest_resource.location)
+                    reward += (1 - distance_to_resource / self._world.length) * 0.1 * (unit.load + 1)
 
             if unit.has_load():
                 distance_to_base = get_distance_between_two_locations(unit.location, self._world.main_team.base.location)
-                reward += (1 - distance_to_base / self._world.length) * (0.002 if unit.is_full() else 0.008) * unit.load
+                reward += (1 - distance_to_base / self._world.length) * (0.2 if unit.is_full() else 0.8) * unit.load
 
-        # Main
-        reward += previous_world["main"]["team"]["base"]["load"] * 20
+        # Main            --------------------------------------------------------------------------------------------------------------------------------
+        reward += previous_world["main"]["team"]["base"]["load"] * 32
         diff_between_unit_counts = len(previous_world["main"]["team"]["units"]["all"]) - len(current_world["main"]["team"]["units"]["all"])
         current_world["main"]["team"]["died_unit_count"] = abs(diff_between_unit_counts) if diff_between_unit_counts < 0 else 0
         current_world["main"]["team"]["base"]["trained_unit"] = 0 < diff_between_unit_counts
-
         if current_world["main"]["team"]["base"]["trained_unit"]:
             reward += 4
-        elif 0 < current_world["main"]["team"]["died_unit_count"]:
-            reward -= 8
 
-        # for unit in current_world["main"]["team"]["units"]["all"]:
-        #     reward -= unit.max_hp - unit.hp
-        #     if not unit.will_move:
-        #         reward -= 5
+        reward -= 4 * current_world["main"]["team"]["died_unit_count"]
+        for unit in current_world["main"]["team"]["units"]["all"]:
+            reward -= unit.max_hp - unit.hp
 
-        # Opponent
+        for unit in previous_world["main"]["team"]["units"]["trucks"]:
+            opponent_units_in_range = [unit_ for unit_ in unit.get_units_in_range(previous_world["main"]["team"]["units"]["all"], 3) if unit_.tag is not Unit.TAGS.TRUCK]
+            nearest_enemy = unit.get_nearest_unit(opponent_units_in_range)
+            if nearest_enemy is None:
+                continue
+
+            for unit_in_range in opponent_units_in_range:
+                reward -= 0.08 * (unit_in_range.hp ** unit_in_range.attack) * (1 - get_distance_between_two_locations(unit.location, unit_in_range.location) / 3)
+
+            main_units_in_range = [unit_ for unit_ in unit.get_units_in_range(previous_world["main"]["team"]["units"]["all"], 5) if unit_.tag is not Unit.TAGS.TRUCK]
+            for unit_in_range in main_units_in_range:
+                reward += 0.8 * (unit_in_range.hp ** unit_in_range.attack) * (1 - get_distance_between_two_locations(unit_in_range.location, nearest_enemy.location) / self._world.length)
+
+        # Opponent        --------------------------------------------------------------------------------------------------------------------------------
         reward -= previous_world["opponent"]["team"]["base"]["load"] * 40
         diff_between_unit_counts = len(previous_world["opponent"]["team"]["units"]["all"]) - len(current_world["opponent"]["team"]["units"]["all"])
         current_world["opponent"]["team"]["died_unit_count"] = abs(diff_between_unit_counts) if diff_between_unit_counts < 0 else 0
         current_world["opponent"]["team"]["base"]["trained_unit"] = 0 < diff_between_unit_counts
-
         if current_world["opponent"]["team"]["base"]["trained_unit"]:
             reward -= 4
-        elif 0 < current_world["opponent"]["team"]["died_unit_count"]:
-            reward += 8
 
+        reward += 8 * current_world["opponent"]["team"]["died_unit_count"]
         for unit in current_world["opponent"]["team"]["units"]["all"]:
-            reward += unit.max_hp - unit.hp
+            reward += (unit.max_hp - unit.hp) ** 2
 
-        # if unit.is_full():
-        #     reward -= 4
-
-        #     if unit.has_space():
-        #         distance_to_resource = get_distance_between_two_locations(unit.location,
-        #                                                                   unit.get_nearest_resource(world.resources).location)
-        #         reward +=( world.length - distance_to_resource )* 1.5
-
-        # if unit.has_load():
-        #     distance_to_base = get_distance_between_two_locations(unit.location,
-        #                                                           main_team.base.location)
-        #     reward += (world.length - distance_to_base) / world.length
-
-        # reward -= len([unit for unit in main_team_units if not unit.will_move]) * 2000
-        #     if truckUnit.has_space():
-        #         nearest_resource = truckUnit.get_nearest_resource(
-        #             world.resources)
-        #         if nearest_resource:
-        #             distance = get_distance_between_two_locations(
-        #                 truckUnit.location, nearest_resource.location)
-        #             reward += (1 - distance /
-        #                        world.distance_between_two_corner) ** 0.8
-        #         else:
-        #             reward += 2
-
-        #     if truckUnit.has_load():
-        #         reward += truckUnit.load * 2
-        #         reward += (1 - get_distance_between_two_locations(truckUnit.location,
-        #                    blue_team.base.location) / world.distance_between_two_corner) ** 0.4
-
-        # for unit in blueUnits:
-        #     if not unit.will_move:
-        #         reward -= 0.8
-        # reward += sum([unit.load for unit in truckUnits])
-        # reward += sum([unit.load * (0.02 ** (unit.max_load - unit.load))
-        #               for unit in truckUnits if unit.is_on_resource(self._world.resources)])
-        # reward += sum([unit.load for unit in truckUnits if unit.has_load()
-        #               and unit.is_on_base(self._world)]) * 0.08
-        # reward -= sum([1 for unit in truckUnits if unit.has_load() and (
-        #     not unit.is_on_base(self._world.blue_team.base) or not unit.is_on_resource(self._world.resources))]) * 0.04
-
-        #
-        # reward -= sum([1 for unit in self._world.blue_team.units if unit.will_move]) * 0.008
-
-        # reward -= len([unit for unit in self._world.blue_team.units if not unit.will_move]) * 2
-        # for truck in [unit for unit in self._world.blue_team.units if unit.tag == UNIT_TAGS.TRUCK]:
-        #     if truck.has_load():
-        #         reward -= self._world.get_distance_between_two_locations(
-        #             truck.location, self._world.blue_team.base.location) * 16
-        #         if truck.is_on_base(self._world):
-        #             reward -= 256
-
-        # for location, direction, target in zip(*action[:-1]):
-        #     unit = next(
-        #         unit for unit in self._world.blue_team.units if unit.location == location)
-        #     if unit.tag != UNIT_TAGS.TRUCK:
-        #         if direction == 0 and target == None:
-        #             reward -= 8
-        #         else:
-        #             reward += 16
-        #     else:
-        #         if direction == 0 and target != location:
-        #             reward -= 16
-        #         else:
-        #             reward += 32
-
-        # reward -= self._world.get_distance_between_two_locations(
-        #     self._world.blue_team.base.location, None) ** 2
-        # if len(self._world.red_team.units) == 0:
-        #     reward += 4096
-
-        # self.__reward += reward
         self.__reward += reward
-        print(f"{self.__reward:0.2f}")
-        return self._flat_state(self.__previous_state), self.__reward, done, {}
+        t = self._flat_state_2(self.__previous_state)
+        # print(f"{self.__reward:0.4f}, {reward:0.4f}")
+        return self._flat_state_2(self.__previous_state), reward, done, {}
 
     def render(self,):
         return None
@@ -993,30 +984,41 @@ class EvaluationAgent(BaseAgent):
     observation_space: Box
     action_space: MultiDiscrete
 
-    def __init__(self, observation_space: Box, action_space: MultiDiscrete):
+    def __init__(self, observation_space_or_team_index: any, action_space_or_action_length: any):
         super().__init__()
         # self.observation_space = observation_space
         # self.action_space = action_space
+        self._ASL_LENGTH: int = 5
 
-        self._world = World(0, 1)
+        if isinstance(observation_space_or_team_index, int):
+            main_team_index = observation_space_or_team_index
+            opponent_team_index = 1 - observation_space_or_team_index
+            self._world = World(main_team_index, opponent_team_index)
+        else:
+            self._world = World(0, 1)
+
         self.__a2c = A2C.load(
-            ".\\models\\TrainSingleTruckLarge\\test_5040000_steps")
+            ".\\models\\v1\\RayEnv_3000000_steps")
         self.observation_space = self.__a2c.observation_space
         self.action_space = self.__a2c.action_space
 
     def action(self, observation: dict[str, any]):
         return self.act(observation)
 
-    def act(self, observation: dict[str, any]):
-        sample, *_ = self.__a2c.predict(self._flat_state(observation))
-        print(sample)
-        movements = sample[0:7]
-        targets = sample[7:14]
-        recruitment = sample[14]
-        chunks = list(zip(movements, targets))
-        self._set_ready_to_action(observation)
-        return self._action(chunks, recruitment)
+    def act(self, state: dict[str, any]):
+        self._set_ready_to_action(state)
+        action, *_ = self.__a2c.predict(self._flat_state_2(state))
+        pre_estimations = [action[i:i+self._ASL_LENGTH] for i in range(0, len(action[:-1]), self._ASL_LENGTH)][::-1]
+        estimations: dict[tuple[int,int], dict[str, any]] = {}
+        for pre_estimation in pre_estimations:
+            y, x, direction, Y, X = pre_estimation
+            estimations[(y, x)] = {
+                "direction": direction,
+                "target": (Y, X)
+            }
 
+        recruitment = action[-1]
+        return self._action(estimations, recruitment)
 
 class RandomAgent(BaseAgent):
     def __init__(self, index: int, action_length: int = ACTION_LENGTH):
@@ -1055,6 +1057,6 @@ class RandomAgent(BaseAgent):
             movements.append(direction)
             targets.append(target)
 
-        assert all(len(x) <= self.action_length for x in [
-                   locations, movements, targets])
+        # assert all(len(x) <= self.action_length for x in [
+        #            locations, movements, targets])
         return (locations, movements, targets, random.randint(0, 4))

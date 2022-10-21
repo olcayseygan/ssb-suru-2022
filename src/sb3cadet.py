@@ -33,6 +33,9 @@ parser.add_argument('--gif', action='store_true',
 parser.add_argument('--img', action='store_true',
                     help='Save images of each turn, also sets render')
 
+parser.add_argument("--version", type=str)
+parser.add_argument('--prefix', type=str)
+
 args = parser.parse_args()
 agents = [None, args.agentRed]
 
@@ -77,8 +80,8 @@ if __name__ == "__main__":
 
         env = SubprocVecEnv([lambda: TrainAgentEnv(args, agents)
                              for i in range(hyperparam["env"]["n_envs"])])
-        checkpoint_callback = CheckpointCallback(save_freq=10000, save_path='./models/12',
-                                                 name_prefix='test')
+        checkpoint_callback = CheckpointCallback(save_freq=10000, save_path=f'./models/{args.version}',
+                                                 name_prefix=args.prefix)
 
         model = A2C(env=env,
                     verbose=1,
@@ -86,5 +89,6 @@ if __name__ == "__main__":
                     **hyperparam["agent"])
 
         model.learn(callback=[loggcallback, checkpoint_callback],
-                    tb_log_name=gamename,
+                    tb_log_name=args.prefix,
                     **hyperparam["learn"])
+        model.save(f"./models/{args.prefix}")

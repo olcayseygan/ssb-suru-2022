@@ -27,11 +27,11 @@ Truck:
   fly: False
   anti_air: False
 Base:
-  starting_resource: 0
+  starting_resource: 5
   recruit: True
 Terrain:
   mountain_risk: 0.25
   wreckage_time: 5
 Animation:
   enabled: False
-  speed: 5
+  speed: 10
