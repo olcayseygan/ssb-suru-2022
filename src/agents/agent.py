@@ -96,7 +96,27 @@ class Tile:
         self.has_resource = False
         self.has_base = False
         self.location: tuple[int, int] = (-1, -1)
+        self.unit: "Unit" = None
 
+        self.a_star = {
+            "f": 0,
+            "g": 0,
+            "h": 0,
+            "previous": None
+        }
+
+    def can_move(self, unit: "Unit", world: "World") -> bool:
+        if unit.tag is Unit.TAGS.HEAVY_TANK and self.IS_STICKY:
+            return False
+
+        if unit.tag is not Unit.TAGS.DRONE and not self.IS_MOVEABLE:
+            return False
+
+    def distance_to(self, other: "Tile") -> int:
+        if other is None:
+            return 100
+
+        return get_distance_between_two_locations(self.location, other.location)
 
 class GrassTile(Tile):
     def __init__(self) -> None:
@@ -147,8 +167,9 @@ class Unit:
         self.hp = hp
         self.load = load
         self.tag = tag
-        self.will_move = False
+        self.idle = True
         self.going_tile: Tile = None
+        self.marked_to_attack: dict[Unit.TAGS, "Unit"] = {}
 
     @property
     def attack(self) -> int:
@@ -172,27 +193,27 @@ class Unit:
         tile.unit = self
         self._tile = tile
 
-    def get_available_directions(self, units: list[Self], reserved_tiles: list[Tile], blue_base_tile: Tile, red_base_tile) -> list[int]:
-        available_directions: list[int] = []
-        for direction, tile in self._tile.neighbors.items():
-            if tile in [*[reserved_tile for reserved_tile in reserved_tiles],
-                        blue_base_tile,
-                        red_base_tile,
-                        *[unit.tile for unit in units if not unit.will_move and unit.tile is not self._tile]]:
+    def get_available_neighbors(self, units: list[Self], reserved_tiles: list[Tile], tile: Tile = None, return_self: bool = False) -> dict[int, Tile]:
+        if tile is None:
+            tile = self.tile
+
+        available_neighbors: dict[int, Tile] = {}
+        for direction, neighbor in tile.neighbors.items():
+            if neighbor in [*[reserved_tile for reserved_tile in reserved_tiles],
+                        *[unit.tile for unit in units if unit.idle and unit.tile is not self._tile]]:
                 continue
 
-            if tile in [unit.going_tile for unit in units if unit.will_move]:
+            if neighbor in [unit.going_tile for unit in units if not unit.idle]:
                 continue
 
-            if self.tag is Unit.TAGS.HEAVY_TANK and tile.IS_STICKY:
-                continue
 
-            if self.tag is not Unit.TAGS.DRONE and not tile.IS_MOVEABLE:
-                continue
+            available_neighbors[direction] = neighbor
 
-            available_directions.append(direction)
+        if return_self:
+            available_neighbors[0] = tile
 
-        return available_directions
+        return available_neighbors
+
 
     def get_nearest_unit(self, units: list[Self]) -> Self:
         return min(units, key=lambda unit: get_distance_between_two_locations(self.location, unit.location), default=None)
@@ -200,8 +221,116 @@ class Unit:
     def get_units_in_range(self, units: list[Self], range: int = 3) -> list[Self]:
         return [unit for unit in units if get_distance_between_two_locations(self.location, unit.location) <= range]
 
+    def get_direction_from_location(self, location: tuple[int, int]) -> int:
+        direction: int = 0
+        for direct, tile in self._tile.neighbors.items():
+            if tile.location == location:
+                direction = direct
+                break
 
-class HeavyTankUnit(Unit):
+        return direction
+
+    def distance_to(self, other: "Unit") -> int:
+        if other is None:
+            return 100
+
+        return self.tile.distance_to(other.tile)
+
+    def flee(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        Y, X = 0, 0
+        length = len(world.opponent_team.units)
+        for unit in world.opponent_team.units:
+            y, x = unit.location
+            Y += y
+            X += x
+
+        if 0 < length:
+            Y //= length
+            X //= length
+
+        path = world.find_path(self, world.terrain.tiles[Y][X])
+        if len(path) == 0:
+            return Unit.action(self, world)
+
+        next_tile, *_ = path
+        direction = self.get_direction_from_location(next_tile.location)
+        return (self.location, direction, None)
+
+    def action(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        return (self.location, 0, None)
+
+    def move(self, world: "World", tile: Tile) -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        path = world.find_path(self, tile)
+        if len(path) == 0:
+            return Unit.action(self, world)
+
+        next_tile, *_ = path
+        direction = self.get_direction_from_location(next_tile.location)
+        return (self.location, direction, None)
+
+
+class AttackerUnit(Unit):
+    def __init__(self, hp: int, load: int, location: tuple[int, int], tag: Unit.TAGS) -> None:
+        super().__init__(hp, load, location, tag)
+
+    def attack(self, world: "World", unit: "Unit") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        if self.distance_to(unit) <= 2:
+            unit.marked_to_attack[self.tag] = self
+            return (self.location, 0, unit.location)
+
+        return self.move(world, unit.tile)
+
+    def attack_nearest(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        nearest_opponent_unit = world.get_nearest_unit(self, world.opponent_team.units)
+        if nearest_opponent_unit is None:
+            return super().action(world)
+
+        return self.attack(world, nearest_opponent_unit)
+
+    def attack_eaches(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        nearest_opponent_unit = world.get_nearest_unit(self, [unit for unit in world.opponent_team.units if self.tag not in unit.marked_to_attack])
+        if nearest_opponent_unit is None:
+            return super().action(world)
+
+        return self.attack(world, nearest_opponent_unit)
+
+    def attack_trucks(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        nearest_opponent_truck = world.get_nearest_unit(self, [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.TRUCK])
+        if nearest_opponent_truck is None:
+            return super().action(world)
+
+        return self.attack(world, nearest_opponent_truck)
+
+    def attack_move_to_opponent_base(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        nearest_opponent_unit = world.get_nearest_unit(self, world.opponent_team.units)
+        if nearest_opponent_unit is not None and self.distance_to(nearest_opponent_unit) <= 2:
+            return self.attack(world, nearest_opponent_unit)
+
+        return self.move(world, world.opponent_team.base.tile)
+
+    def action(self, world: "World", action_type: int) -> tuple[tuple[int, int], int, tuple[int, int]]:
+        action_space = [False for _ in range(6)]
+        action_space[action_type] = True
+        [do_nothing_action, attack_nearest, attack_eaches, attack_trucks, attack_move_to_opponent_base, flee] = action_space
+
+        if attack_nearest:
+            return self.attack_nearest(world)
+
+        if attack_eaches:
+            return self.attack_eaches(world)
+
+        if attack_trucks:
+            return self.attack_trucks(world)
+
+        if attack_move_to_opponent_base:
+            return self.attack_move_to_opponent_base(world)
+
+        if flee:
+            return self.move(world, world.main_team.base.tile)
+
+        return super().action(world)
+
+class HeavyTankUnit(AttackerUnit):
     def __init__(self, hp: int, load: int, location: tuple[int, int], tag: Unit.TAGS) -> None:
         super().__init__(hp, load, location, tag)
         self._cost: int = 2
@@ -212,7 +341,7 @@ class HeavyTankUnit(Unit):
         self._anti_air: bool = False
 
 
-class LightTankUnit(Unit):
+class LightTankUnit(AttackerUnit):
     def __init__(self, hp: int, load: int, location: tuple[int, int], tag: Unit.TAGS) -> None:
         super().__init__(hp, load, location, tag)
         self._cost: int = 1
@@ -253,6 +382,9 @@ class TruckUnit(Unit):
     def has_load(self) -> bool:
         return 0 < self.load
 
+    def is_empty(self) -> bool:
+        return self.load == 0
+
     def is_full(self) -> bool:
         return self.load >= self._max_load
 
@@ -262,31 +394,59 @@ class TruckUnit(Unit):
     def is_on_base(self) -> bool:
         return self._tile.has_base
 
-    def get_nearest_resource(self, resources: list[Tile]) -> Tile:
-        return min(resources, key=lambda resource: get_distance_between_two_locations(self.location, resource.location), default=None)
-
-    def get_available_directions(self, units: list[Self], reserved_locations: list[Tile], blue_base_tile: Tile, red_base_tile: Tile) -> list[int]:
-        available_directions = super().get_available_directions(
-            units, reserved_locations, blue_base_tile, red_base_tile)
-        if not self.is_on_base() and not self.has_load():
-            return available_directions
-
-        for direction, tile in self._tile.neighbors.items():
-            if tile.has_base and tile is blue_base_tile:
-                available_directions.append(direction)
-                break
-
-        return available_directions
-
-    def pick_up_resource(self) -> None:
+    def pick_up_resource(self) -> tuple[tuple[int, int], int,  tuple[int, int]]:
         self._is_resource_picked_up = True
+        return (self.location, 0, self.location)
 
-    def deliver_resource(self) -> None:
+    def deliver_resource(self) -> tuple[tuple[int, int], int,  tuple[int, int]]:
         self._is_resource_delivered = True
+        return (self.location, 0, self.location)
+
+    def move_to_resource(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        resource_tile: Tile = world.get_nearest_resource_tile(self)
+        if resource_tile is None:
+            return super().action(world)
+
+        return self.move(world, resource_tile)
+
+    def return_to_base(self, world: "World") -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        base_tile: Tile = world.main_team.base.tile
+        return self.move(world, base_tile)
+
+    def action(self, world: "World", action_type: int) -> tuple[tuple[int, int], int,  tuple[int, int]]:
+        action_space = [False for _ in range(3)]
+        action_space[action_type] = True
+        [do_nothing_action, deliver_action, call_bell_action] = action_space
+
+        if self.is_empty() and len(world.resources) == 0:
+            return self.move(world, world.opponent_team.base.tile)
+
+        if self.is_on_resource() and self.has_space():
+            return self.pick_up_resource()
+
+        if self.is_on_base() and self.has_load():
+            return self.deliver_resource()
+
+        if deliver_action:
+            if self.has_load():
+                return self.return_to_base(world)
+
+        if call_bell_action:
+            return self.return_to_base(world)
+
+        if self.has_space():
+            if self.has_load() and self.tile.distance_to(world.main_team.base.tile) < self.tile.distance_to(world.get_nearest_resource_tile(self)):
+                return self.return_to_base(world)
+
+            return self.move_to_resource(world)
+
+        if self.has_load() or len(world.resources) == 0:
+            return self.return_to_base(world)
+
+        return super().action(world)
 
 
-class DroneUnit(Unit):
-
+class DroneUnit(AttackerUnit):
     def __init__(self, hp: int, load: int, location: tuple[int, int], tag: Unit.TAGS) -> None:
         super().__init__(hp, load, location, tag)
         self._cost: int = 1
@@ -297,11 +457,12 @@ class DroneUnit(Unit):
         self._anti_air: bool = True
 
 
+
 class Base:
     def __init__(self, location: tuple[int, int], load: int) -> None:
         self.location: tuple[int, int] = location
         self.load: int = load
-        self.on_tile: Tile = None
+        self.tile: Tile = None
         self.trained: bool = False
 
     def train(self):
@@ -419,6 +580,142 @@ class World:
         self.opponent_team.units.clear()
         self.reserved_tiles.clear()
 
+    def __find_path(self, unit: Unit, open_set, closed_set, target: Tile):
+        if len(open_set) == 0:
+            return []
+
+        current = min(open_set, key=lambda set: set.a_star["f"], default=open_set[0])
+        # done: bool = False
+        # if unit.tag is Unit.TAGS.TRUCK:
+        #     if current is target:
+        #         done = True
+        # else:
+        #     if target.unit is None:
+        #         done = True
+        #     elif unit.tile.distance_to(target) <= 2:
+        #         done = True
+        #         target = current
+
+        if current is target:
+            path = []
+            cell = target
+            while (cell.a_star["previous"] is not None):
+                path.append(cell)
+                cell = cell.a_star["previous"]
+
+            for tile in set(closed_set + open_set):
+                tile.a_star["f"] = 0
+                tile.a_star["g"] = 0
+                tile.a_star["h"] = 0
+                tile.a_star["previous"] = None
+
+            return path[::-1]
+
+        open_set.remove(current)
+        closed_set.append(current)
+
+        neighbors = self.get_tiles_with_their_directions(unit, current)
+        for direction, neighbor in current.neighbors.items():
+            if neighbor is target:
+                neighbors[direction] = target
+                break
+
+        for neighbor in neighbors.values():
+            if neighbor in closed_set:
+                continue
+
+            g = current.a_star["g"] + get_distance_between_two_locations(current.location, neighbor.location) * (10 if neighbor.tag == Tile.TAGS.MOUNTAIN else 1)
+            is_pathable = False
+            if neighbor in open_set:
+                if g < neighbor.a_star["g"]:
+                    neighbor.a_star["g"] = g
+                    is_pathable = True
+            else:
+                neighbor.a_star["g"] = g
+                is_pathable = True
+                open_set.append(neighbor)
+
+            if is_pathable:
+                neighbor.a_star["h"] = get_distance_between_two_locations(neighbor.location, target.location)
+                neighbor.a_star["f"] = neighbor.a_star["g"] + neighbor.a_star["h"]
+                neighbor.a_star["previous"] = current
+
+        return self.__find_path(unit, open_set, closed_set, target)
+
+    def find_path(self, unit: Unit, target: Tile) -> list[Tile]:
+        if unit.tile is target:
+            return []
+
+        return self.__find_path(unit, [unit.tile], [], target)
+
+    def get_tiles_with_their_directions(self, unit: Unit, tile: Tile = None) -> dict[int, Tile]:
+        if tile is None:
+            tile = unit.tile
+
+        units: list[Unit] = self.main_team.units + self.opponent_team.units
+        tiles: dict[int, Tile] = {}
+        for direction, neighbor in tile.neighbors.items():
+            if neighbor in [*self.reserved_tiles, *[unit_.tile for unit_ in units if unit_.idle and unit_.tile is not unit.tile]]:
+                continue
+
+            if neighbor in [unit.going_tile for unit in units if not unit.idle]:
+                continue
+
+            if unit.tag is Unit.TAGS.HEAVY_TANK and neighbor.IS_STICKY:
+                continue
+
+            if unit.tag is not Unit.TAGS.DRONE and not neighbor.IS_MOVEABLE:
+                continue
+
+            tiles[direction] = neighbor
+
+        return tiles
+
+    def get_tiles_unit_can_move_to_in_distance(self, unit: Unit, distance: int, tile: Tile = None):
+        if tile is None:
+            tile = unit.tile
+
+        def get_tiles(tile_: Tile, tiles: list[Tile] = []):
+            neigbors = self.get_tiles_with_their_directions(unit, tile=tile_).values()
+            tiles_: list[Tile] = []
+            for tile__ in neigbors:
+                if tile__ in tiles:
+                    continue
+
+                distance_ = get_distance_between_two_locations(tile.location, tile__.location)
+                if distance < distance_:
+                    continue
+
+                tiles_.append(tile__)
+
+            if len(tiles_) == 0:
+                return []
+
+            tiles += tiles_
+            for tile__ in tiles_:
+                tiles_ += get_tiles(tile__, tiles)
+
+            return tiles_
+
+        return get_tiles(tile, [tile])
+
+    def get_nearest_resource_tile(self, truck_unit: TruckUnit) -> Tile:
+        resources = [resource for resource in self.resources if resource.unit is None]
+        return min(resources, key=lambda tile: get_distance_between_two_locations(truck_unit.tile.location, tile.location), default=None)
+
+    def get_nearest_unit(self, unit: Unit, units: list[Unit]) -> Unit:
+        if not unit._anti_air:
+            units = [unit_ for unit_ in units if unit_.tag is not Unit.TAGS.DRONE]
+
+        if unit.tag is Unit.TAGS.DRONE:
+            units = [unit_ for unit_ in units if unit_.tag is not Unit.TAGS.HEAVY_TANK]
+
+        return min(units, key=lambda unit_: get_distance_between_two_locations(unit.tile.location, unit_.tile.location), default=None)
+
+    def is_location_in_range(self, location: dict[int, int]) -> bool:
+        Y, X = location
+        return 0 <= Y < self.height and 0 <= X < self.width
+
     @staticmethod
     def generate_random_world_config(height, width) -> np.ndarray:
         def flip(arr):
@@ -452,21 +749,39 @@ class World:
         if len(grasses) == 0:
             return World.generate_random_world_config(height, width)
 
-        base_location = random.choice(grasses)
+        base_location = grasses[random.randint(0, len(grasses) - 1)]
         base_map[base_location] = 1
 
         grasses.remove(base_location)
-        for (y, x) in random.choices(grasses, k=random.randint(0, len(grasses))):
+        for _ in range(random.randint(0, len(grasses) // 2)):
+            y, x = random.choice(grasses)
             resource_map[y, x] = 1
+            grasses.remove((y, x))
 
+        unit_count = random.randint(0, min(len(grasses), 7))
+        unit_map = np.zeros(game_map.shape, dtype=int)
+        for _ in range(unit_count):
+            (y, x) = random.choice(grasses)
+            unit_map[y, x] = random.randint(1, 4)
+            grasses.remove((y, x))
+
+
+        unit_map = np.concatenate((-flip(unit_map), unit_map))
         base_map = np.concatenate((-flip(base_map), base_map))
-        resource_map = np.concatenate((resource_map, flip(resource_map)))
-        game_map = np.concatenate((game_map, flip(game_map)))
+        resource_map = np.concatenate((flip(resource_map), resource_map))
+        game_map = np.concatenate((flip(game_map), game_map))
 
         blue_base_location_y, blue_base_location_x = np.array(
             np.where(base_map == 1)).flatten()
         red_base_location_y, red_base_location_x = np.array(
             np.where(base_map == -1)).flatten()
+
+        blue_units_locations = np.where(0 < unit_map)
+        red_units_locations = np.where(unit_map < 0)
+
+        if game_map[blue_base_location_y, blue_base_location_x] != 2:
+            return World.generate_random_world_config(height, width)
+
         return {
             "max_turn": random.randint(32, 64),
             "turn_timer": 10,
@@ -480,14 +795,28 @@ class World:
                     "x": red_base_location_x,
                     "y": red_base_location_y,
                 },
-                "units": []
+                "units": [
+                    {
+                        "type": ["Truck", "LightTank", "HeavyTank","Drone"][abs(unit_map[y][x]) - 1],
+                        "x": x,
+                        "y": y,
+                    }
+                    for y, x in zip(*red_units_locations)
+                ]
             },
             "blue": {
                 "base": {
                     "x": blue_base_location_x,
                     "y": blue_base_location_y,
                 },
-                "units": []
+                "units": [
+                    {
+                        "type": ["Truck", "LightTank", "HeavyTank","Drone"][unit_map[y][x] - 1],
+                        "x": x,
+                        "y": y,
+                    }
+                    for y, x in zip(*blue_units_locations)
+                ]
             },
             "resources": [
                 {
@@ -572,73 +901,123 @@ class BaseAgent():
                     red_base = (i, j)
         return [blue_units, red_units, blue_base, red_base, resources]
 
-    def _action(self, estimations: dict[tuple[int, int], dict[str, any]], recruitment: int):
+    def _action(self, estimations: list[int], recruitment: int):
         world = self._world
         locations, movements, targets, = [], [], []
+
+        # NOTE:
 
         # needed variables
         main_team = world.main_team
         opponent_team = world.opponent_team
         main_team_units = main_team.units
-        opponent_team_units = opponent_team.units
-        sorted_main_team_units = sorted(main_team_units, key=lambda unit: get_distance_between_two_locations(
-            main_team.base.location, unit.location), reverse=True)
+        # opponent_team_units = opponent_team.units
+        # sorted_main_team_units = sorted(main_team_units, key=lambda unit: get_distance_between_two_locations(
+        #     main_team.base.location, unit.location))
 
-        # running for each unit with its index
-        for estimation_location, estimation in estimations.items():
-            unit = self._world.main_team.find_unit(estimation_location)
-            if unit is None:
-                continue
+        truck_estimations = estimations[:1]
+        drone_estimations = estimations[1:2]
+        heavy_tank_estimations = estimations[2:3]
+        light_tank_estimations = estimations[3:4]
+        for unit in main_team_units:
+            if unit.tag is Unit.TAGS.TRUCK:
+                action_type = truck_estimations[0]
+            elif unit.tag is Unit.TAGS.DRONE:
+                action_type = drone_estimations[0]
+            elif unit.tag is Unit.TAGS.HEAVY_TANK:
+                action_type = heavy_tank_estimations[0]
+            elif unit.tag is Unit.TAGS.LIGHT_TANK:
+                action_type = light_tank_estimations[0]
+
+            source_location, direction, target_location = unit.action(world, action_type)
+            """
+            # unit.action(world)
+            # target_tile = None
+            # if unit.tag == Unit.TAGS.TRUCK:
+            #     nearest_resource = world.get_nearest_resource_tile(unit)
+            #     if nearest_resource is not None:
+            #         target_tile = nearest_resource
+            # else:
+            #     # target_tile = world.opponent_team.base.on_tile
+            #     nearest_unit = world.get_nearest_unit(unit, opponent_team_units)
+            #     if nearest_unit is not None:
+            #         target_tile = nearest_unit.tile
+
+            # if target_tile is None:
+            #     continue
+
+            # direction_tile = unit.tile
+            # path = world.find_path(unit, target_tile)
+            # if len(path) == 0:
+            #     continue
+
+            # direction_tile, *_ = path
+            # if direction_tile is None:
+            #     continue
+
+            # direction = unit.get_direction_from_location(direction_tile.location)
+            # target = None
+
+            # if unit is not Unit.TAGS.TRUCK:
+            #     nearest_oppenent_unit = world.get_nearest_unit(unit, opponent_team_units)
+            #     if unit.distance_to(nearest_oppenent_unit) <= 2:
+            #         direction = 0
+            #         target = nearest_oppenent_unit.location
 
             # checking that there are some directions to action
-            available_directions = unit.get_available_directions(
-                [*main_team_units, *opponent_team_units],
-                world.reserved_tiles,
-                world.main_team.base.on_tile,
-                world.opponent_team.base.on_tile
-            )
-            if len(available_directions) == 0:
-                continue
+            # available_neighbors = unit.get_available_neighbors(
+            #     [*main_team_units, *opponent_team_units],
+            #     world.reserved_tiles
+            # )
+            # if len(available_neighbors.keys()) == 0:
+            #     continue
 
-            direction, target = estimation["direction"], estimation["target"]
-            if direction != 0 and direction not in available_directions:
-                continue
+            # offset = estimation["offset"]
+            # target = (unit.location[0] + offset[0], unit.location[1] + offset[1])
+            # if not world.is_location_in_range(target):
+            #     continue
 
-            sorted_opponent_units_to_unit = sorted(opponent_team.units, key=lambda unit: get_distance_between_two_locations(
-                unit.location, unit.location))
-            if unit.tag is Unit.TAGS.TRUCK:
-                target = unit.location if direction == 0 else None
-                if target is not None:
-                    if unit.has_load() and unit.is_on_base():
-                        unit.deliver_resource()
-                    elif unit.has_space() and unit.is_on_resource():
-                        unit.pick_up_resource()
-                    else:
-                        target = None
+            # target = None
+            # direction = unit.get_direction_from_location(direction_tile.location)
+            # sorted_opponent_units_to_unit = sorted(opponent_team.units, key=lambda unit: get_distance_between_two_locations(
+            #     unit.location, unit.location))
+            # if unit.tag is Unit.TAGS.TRUCK:
+            #     target = unit.location if direction == 0 else None
+            #     if target is not None:
+            #         if unit.has_load() and unit.is_on_base():
+            #             unit.deliver_resource()
+            #         elif unit.has_space() and unit.is_on_resource():
+            #             unit.pick_up_resource()
+            #         else:
+            #             target = None
 
-            if target is not None:
-                if unit.tag is not Unit.TAGS.TRUCK:
-                    distance_to_target = get_distance_between_two_locations(
-                        unit.location, target)
-                    if 2 < distance_to_target:
-                        target = None
+            # if target is not None:
+            #     if unit.tag is not Unit.TAGS.TRUCK:
+            #         distance_to_target = get_distance_between_two_locations(
+            #             unit.location, target)
+            #         if 2 < distance_to_target:
+            #             target = None
 
-            if 0 < direction:
-                world.reserved_tiles.append(unit.tile.neighbors[direction])
-            else:
-                if unit.tag == Unit.TAGS.TRUCK:
-                    if (unit.has_space() and unit.is_on_resource()) or (unit.has_load() and unit.is_on_base()):
-                        target = unit.location
+            # if 0 < direction:
+            #     world.reserved_tiles.append(unit.tile.neighbors[direction])
+            # else:
+            #     if unit.tag == Unit.TAGS.TRUCK:
+            #         if (unit.has_space() and unit.is_on_resource()) or (unit.has_load() and unit.is_on_base()):
+            #             target = unit.location
 
-            if target is None and direction == 0:
-                continue
+            # if target is None and direction == 0:
+            #     continue
+            """
 
-            unit.will_move = True
+            unit.idle = False
             unit.going_tile = unit.tile.neighbors[direction] if 0 < direction else unit.tile
 
             locations.append(unit.location)
             movements.append(direction)
-            targets.append(target)
+            targets.append(target_location)
+
+        if self.action_length <= len(world.main_team.units):
+            recruitment = 0
 
         # assert (all(len(x) <= self.action_length for x in [
         #            locations, movements, targets]), f"{len(locations)}, {len(movements)}, {len(targets)}, {locations}, {movements}, {targets}")
@@ -667,7 +1046,6 @@ class BaseAgent():
             *terrain.flatten()
         ]
 
-    # Public:
     def __init__(self):
         self._world: World
         self._state: dict[str, any]
@@ -696,8 +1074,8 @@ class BaseAgent():
             main_team.units.append(unit)
 
         base_y, base_x = main_team.base.location
-        main_team.base.on_tile = world.terrain.tiles[base_y][base_x]
-        world.terrain.tiles[base_y][base_x].has_base = True
+        main_team.base.tile = world.terrain.tiles[base_y][base_x]
+        main_team.base.tile.has_base = True
 
         # Oppenent Team
         opponent_team = self._world.opponent_team
@@ -713,103 +1091,8 @@ class BaseAgent():
             opponent_team.units.append(unit)
 
         base_y, base_x = opponent_team.base.location
-        opponent_team.base.on_tile = world.terrain.tiles[base_y][base_x]
-        world.terrain.tiles[base_y][base_x].has_base = True
-
-    def _update_after_action(self, state: dict[str, any], previous_state: dict[str, any]):
-        decoded_state = self._decode_state(state)
-        previous_decoded_state = self._decode_state(previous_state)
-        world = self._world
-        # world.resources = decoded_state[4]
-        scores = state["score"]
-
-        # TODO: eğer base location da yeni bir birim varsa üeritilmiş demektir. bunu listene ekleyeceğiz.
-        # TODO: rakip dusmanla ayni yere gitmeye calisabilirler. cozmeliyiz
-
-        main_team = self._world.main_team
-        opponent_team = self._world.opponent_team
-
-        main_team.base.load = int(scores[main_team.index])
-        opponent_team.base.load = int(scores[opponent_team.index])
-
-        tiles_in_row: list[Tile] = [
-            tile for row in world.terrain.tiles for tile in row]
-        checked_tiles: list[Tile] = []
-
-        def find_tail_of_chain(tile: Tile) -> Tile:
-            if tile.coming_unit is None:
-                return tile
-
-            return find_tail_of_chain(tile.coming_unit.tile)
-
-        main_decoded_units = decoded_state[main_team.index]
-        opponent_decoded_units = decoded_state[opponent_team.index]
-        all_decoded_units = main_decoded_units = opponent_decoded_units
-
-        for tile in tiles_in_row:
-            if tile in checked_tiles:
-                continue
-
-            unit = tile.unit
-            if unit is None:
-                continue
-
-            head_of_chain: Tile = unit.going_tile
-
-            if head_of_chain is None:
-                continue
-
-            if head_of_chain.location in [opponent_unit["location"] for opponent_unit in opponent_decoded_units]:
-                continue
-
-            tail_of_chain: Tile = find_tail_of_chain(head_of_chain)
-            unit_on_tail: Unit = tail_of_chain.unit
-            if unit_on_tail is None:
-                continue
-
-            current_tile: Tile = head_of_chain
-            while True:
-                coming_unit = current_tile.coming_unit
-                if coming_unit is None:
-                    break
-
-                checked_tiles.append(current_tile)
-                coming_tile = coming_unit.tile
-                coming_tile.unit = None
-                coming_unit.tile = current_tile
-                current_unit = current_tile.unit
-                current_unit.going_tile = None
-                current_unit.will_move = False
-                current_tile.coming_unit = None
-                current_tile = coming_tile
-
-        # TODO: karşının harketini nasıl bileceğiz?
-        unit_list = decoded_state[main_team.index]
-        is_there_new_unit = len(main_team.units) < len(unit_list)
-
-        for i, entity in enumerate(decoded_state[main_team.index]):
-            [_, tag, hp, location, load] = entity.values()
-            unit = self._find_unit(location)
-            if unit is None:
-                y, x = location
-                unit = self._create_unit(entity)
-                unit.tile = world.terrain.tiles[y][x]
-                main_team.units.append(unit)
-            else:
-                unit.hp = hp
-                unit.load = load
-
-         # Oppenent Team
-        opponent_team = self._world.opponent_team
-        opponent_team.base.load = int(scores[opponent_team.index])
-
-        previous_decoded_state = self._decode_state(previous_state)
-        for i, entity in enumerate(previous_decoded_state[opponent_team.index]):
-            [_, tag, hp, location, load] = entity.values()
-            unit = self._find_unit(location)
-            unit.hp = hp
-            unit.load = load
-
+        opponent_team.base.tile = world.terrain.tiles[base_y][base_x]
+        opponent_team.base.tile.has_base = True
 
 class TrainAgentEnv(BaseAgent, Env):
     def __world_to_dict(self, state: dict[str, any]) -> dict[str, any]:
@@ -864,21 +1147,26 @@ class TrainAgentEnv(BaseAgent, Env):
         self.__previous_state: dict[str, any] = {}
         self.__reward: float = 0.0
         self.__game = Game(kwargs, agents)
-        self.__state: dict[str, any] = self.__generate_world_config()
+        self.__state: dict[str, any] = {}
         height, width =  self.__game.map_y, self.__game.map_x
         self._world = World(0, 1)
-        self._ASL: list[int] = [height, width, 7,  height, width]
-        self._ASL_LENGTH: int = len(self._ASL)
         length = height * width
         self.observation_space = Box(
-            low=-2,
-            high=401,
+            low=-32,
+            high=512,
             shape=(length * 6 + 4,),
             dtype=np.int16
         )
-        self.action_space = MultiDiscrete(np.array([
-            self._ASL for _ in range(self.action_length)
-        ]).flatten().tolist() + [5])
+
+        # TODO: all drone units should try to group up
+        # TODO: scatter if there are so many dronein the map
+
+        self.action_space = MultiDiscrete(
+            [3] # [do-nothing, deliver, call-bell] Truck Actions
+            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee] Drone Actions8
+            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee] Heavy Tank Actions
+            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee] Light Tank Actions
+            + [5])
 
     def setup(self, observation_space: Box, action_space: MultiDiscrete):
         self.observation_space = observation_space
@@ -889,24 +1177,21 @@ class TrainAgentEnv(BaseAgent, Env):
         self.__reward = 0.0
         return self._flat_state_2(self.__state)
 
-    def step(self, action: np.ndarray):
+    def step(self, actions: np.ndarray):
         self.__previous_state = self.__state
         previous_world: dict[str, any] = self.__world_to_dict(self.__previous_state)
-        pre_estimations = [action[i:i+self._ASL_LENGTH] for i in range(0, len(action[:-1]), self._ASL_LENGTH)][::-1]
-        estimations: dict[tuple[int,int], dict[str, any]] = {}
-        for pre_estimation in pre_estimations:
-            y, x, direction, Y, X = pre_estimation
-            estimations[(y, x)] = {
-                "direction": direction,
-                "target": (Y, X)
-            }
-
-        recruitment = action[-1]
+        estimations = actions[:-1]
+        recruitment = actions[-1]
         self.__state, _, done = self.__game.step(self._action(estimations, recruitment))
         current_world: dict[str, any] = self.__world_to_dict(self.__state)
 
         reward = 0.0
-        # Gold Collection
+        # make a reward function
+        # for unit in previous_world["main"]["team"]["units"]["all"]:
+        #     if next((True for estimation in estimations if estimation == unit.location), False):
+        #         reward += 0.2
+
+        """# Gold Collection
         for unit in previous_world["main"]["team"]["units"]["trucks"]:
             # reward += unit.load * 8
             if unit.is_resource_picked_up():
@@ -929,8 +1214,8 @@ class TrainAgentEnv(BaseAgent, Env):
         diff_between_unit_counts = len(previous_world["main"]["team"]["units"]["all"]) - len(current_world["main"]["team"]["units"]["all"])
         current_world["main"]["team"]["died_unit_count"] = abs(diff_between_unit_counts) if diff_between_unit_counts < 0 else 0
         current_world["main"]["team"]["base"]["trained_unit"] = 0 < diff_between_unit_counts
-        if current_world["main"]["team"]["base"]["trained_unit"]:
-            reward += 4
+        # if current_world["main"]["team"]["base"]["trained_unit"]:
+        #     reward += 4
 
         reward -= 4 * current_world["main"]["team"]["died_unit_count"]
         for unit in current_world["main"]["team"]["units"]["all"]:
@@ -959,12 +1244,11 @@ class TrainAgentEnv(BaseAgent, Env):
 
         reward += 8 * current_world["opponent"]["team"]["died_unit_count"]
         for unit in current_world["opponent"]["team"]["units"]["all"]:
-            reward += (unit.max_hp - unit.hp) ** 2
+            reward += (unit.max_hp - unit.hp) ** 2"""
 
         self.__reward += reward
-        t = self._flat_state_2(self.__previous_state)
         # print(f"{self.__reward:0.4f}, {reward:0.4f}")
-        return self._flat_state_2(self.__previous_state), reward, done, {}
+        return self._flat_state_2(self.__state), reward, done, {}
 
     def render(self,):
         return None
@@ -988,7 +1272,7 @@ class EvaluationAgent(BaseAgent):
         super().__init__()
         # self.observation_space = observation_space
         # self.action_space = action_space
-        self._ASL_LENGTH: int = 5
+        self._ASL_LENGTH: int = 3
 
         if isinstance(observation_space_or_team_index, int):
             main_team_index = observation_space_or_team_index
@@ -998,7 +1282,7 @@ class EvaluationAgent(BaseAgent):
             self._world = World(0, 1)
 
         self.__a2c = A2C.load(
-            ".\\models\\v1\\RayEnv_3000000_steps")
+            ".\\models\\v1\\TrainSingleTruckLarge_2240000_steps")
         self.observation_space = self.__a2c.observation_space
         self.action_space = self.__a2c.action_space
 
@@ -1009,13 +1293,13 @@ class EvaluationAgent(BaseAgent):
         self._set_ready_to_action(state)
         action, *_ = self.__a2c.predict(self._flat_state_2(state))
         pre_estimations = [action[i:i+self._ASL_LENGTH] for i in range(0, len(action[:-1]), self._ASL_LENGTH)][::-1]
-        estimations: dict[tuple[int,int], dict[str, any]] = {}
+        estimations: list[dict[str, any]] = []
         for pre_estimation in pre_estimations:
-            y, x, direction, Y, X = pre_estimation
-            estimations[(y, x)] = {
+            direction, Y, X = pre_estimation
+            estimations.append({
                 "direction": direction,
-                "target": (Y, X)
-            }
+                "offset": (Y - 1, X - 1)
+            })
 
         recruitment = action[-1]
         return self._action(estimations, recruitment)
@@ -1023,7 +1307,7 @@ class EvaluationAgent(BaseAgent):
 class RandomAgent(BaseAgent):
     def __init__(self, index: int, action_length: int = ACTION_LENGTH):
         super().__init__()
-        self.action_length = action_length
+        self.action_length = ACTION_LENGTH
         self._world = World(index, 1 - index)
 
     def action(self, observation: dict[str, any]):
@@ -1035,23 +1319,21 @@ class RandomAgent(BaseAgent):
         lower_bound = min(len(blue_team.units), self.action_length)
         for i in range(lower_bound):
             blue_unit = blue_team.units[i]
-            available_directions = blue_unit.get_available_directions(
+            available_neighbors = blue_unit.get_available_neighbors(
                 [*blue_team.units, *red_team.units],
-                world.reserved_tiles,
-                world.main_team.base.on_tile,
-                world.opponent_team.base.on_tile
+                world.reserved_tiles
             )
-            if len(available_directions) == 0:
+            if len(available_neighbors.keys()) == 0:
                 continue
 
-            direction = random.choice(available_directions)
+            direction = random.choice(list(available_neighbors.keys()))
             target = blue_unit.location
             (Y, X) = target
             if 0 < direction:
                 world.reserved_tiles.append(world.terrain.tiles[Y][X])
 
             blue_unit.going_tile = blue_unit.tile.neighbors[direction]
-            blue_unit.will_move = True
+            blue_unit.idle = False
             locations.append(blue_unit.location)
             units.append(blue_unit)
             movements.append(direction)
