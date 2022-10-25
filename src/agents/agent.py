@@ -309,24 +309,35 @@ class AttackerUnit(Unit):
         return self.move(world, world.opponent_team.base.tile)
 
     def action(self, world: "World", action_type: int) -> tuple[tuple[int, int], int, tuple[int, int]]:
-        action_space = [False for _ in range(6)]
+        action_space = [False] * 6
         action_space[action_type] = True
-        [do_nothing_action, attack_nearest, attack_eaches, attack_trucks, attack_move_to_opponent_base, flee] = action_space
+        [attack_nearest_action,
+         attack_eaches_action,
+         attack_trucks_action,
+         attack_move_to_opponent_base_action,
+         flee_action,
+         kamikaze_action] = action_space
 
-        if attack_nearest:
+        if attack_nearest_action:
             return self.attack_nearest(world)
 
-        if attack_eaches:
+        if attack_eaches_action:
             return self.attack_eaches(world)
 
-        if attack_trucks:
+        if attack_trucks_action:
             return self.attack_trucks(world)
 
-        if attack_move_to_opponent_base:
+        if attack_move_to_opponent_base_action:
             return self.attack_move_to_opponent_base(world)
 
-        if flee:
+        if flee_action:
             return self.move(world, world.main_team.base.tile)
+
+        if kamikaze_action:
+            if world.get_nearest_tile(world.opponent_team.base.tile, [unit.tile for unit in world.main_team.units]) is self.tile:
+                return self.attack_move_to_opponent_base(world)
+            else:
+                return self.move(world, world.opponent_team.base.tile)
 
         return super().action(world)
 
@@ -712,6 +723,9 @@ class World:
 
         return min(units, key=lambda unit_: get_distance_between_two_locations(unit.tile.location, unit_.tile.location), default=None)
 
+    def get_nearest_tile(self, tile: Tile, tiles: list[Tile]) -> Tile:
+        return min(tiles, key=lambda target_tile: tile.distance_to(target_tile), default=None)
+
     def is_location_in_range(self, location: dict[int, int]) -> bool:
         Y, X = location
         return 0 <= Y < self.height and 0 <= X < self.width
@@ -827,7 +841,7 @@ class World:
         }
 
 
-class BaseAgent():
+class Agent():
     def _create_unit(self, entity: list[any]) -> Unit:
         [_, tag, hp, location, load] = entity.values()
         if tag == Unit.TAGS.HEAVY_TANK.value:
@@ -903,9 +917,7 @@ class BaseAgent():
 
     def _action(self, estimations: list[int], recruitment: int):
         world = self._world
-        locations, movements, targets, = [], [], []
-
-        # NOTE:
+        actions = np.ndarray(shape=(0, 3), dtype=object)
 
         # needed variables
         main_team = world.main_team
@@ -1011,17 +1023,14 @@ class BaseAgent():
 
             unit.idle = False
             unit.going_tile = unit.tile.neighbors[direction] if 0 < direction else unit.tile
-
-            locations.append(unit.location)
-            movements.append(direction)
-            targets.append(target_location)
+            actions = np.append(actions, [[source_location, direction, target_location]], axis=0)
 
         if self.action_length <= len(world.main_team.units):
             recruitment = 0
 
-        # assert (all(len(x) <= self.action_length for x in [
-        #            locations, movements, targets]), f"{len(locations)}, {len(movements)}, {len(targets)}, {locations}, {movements}, {targets}")
-        return (locations, movements, targets, recruitment)
+        assert len(actions) <= self.action_length
+        source_locations, directions, target_directions, = actions[:, 0], actions[:, 1], actions[:, 2]
+        return (source_locations, directions, target_directions, recruitment)
 
     def _flat_state_2(self, state: dict[str, any]):
         score: np.ndarray = np.array(state["score"], dtype=np.int8)
@@ -1094,7 +1103,7 @@ class BaseAgent():
         opponent_team.base.tile = world.terrain.tiles[base_y][base_x]
         opponent_team.base.tile.has_base = True
 
-class TrainAgentEnv(BaseAgent, Env):
+class TrainAgentEnv(Agent, Env):
     def __world_to_dict(self, state: dict[str, any]) -> dict[str, any]:
         self._set_ready_to_action(state)
         return {
@@ -1138,8 +1147,8 @@ class TrainAgentEnv(BaseAgent, Env):
     def __generate_world_config(self) -> dict[str, any]:
         height, width =  self.__game.map_y, self.__game.map_x
         self.__game.config = World.generate_random_world_config(height, width)
-        self.__game.max_turn = self.__game.config["max_turn"]
-        self.__game.turn_timer = self.__game.config["turn_timer"]
+        # self.__game.max_turn = self.__game.config["max_turn"]
+        # self.__game.turn_timer = self.__game.config["turn_timer"]
         return self.__game.reset()
 
     def __init__(self, kwargs: Namespace, agents: list[str]) -> None:
@@ -1160,12 +1169,14 @@ class TrainAgentEnv(BaseAgent, Env):
 
         # TODO: all drone units should try to group up
         # TODO: scatter if there are so many dronein the map
-
+        # TODO: optimize searching algorithm for tank and drone
+        # TODO: denfend base
+        # TODO: blocking the opponent unit if it is alone in the map if resources are exist
         self.action_space = MultiDiscrete(
             [3] # [do-nothing, deliver, call-bell] Truck Actions
-            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee] Drone Actions8
-            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee] Heavy Tank Actions
-            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee] Light Tank Actions
+            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee, kamikaze] Drone Actions8
+            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee, kamikaze] Heavy Tank Actions
+            + [6] # [do-nothing, attack-nearby, attack-eaches, attack-trucks, attack-move-base, flee, kamikaze] Light Tank Actions
             + [5])
 
     def setup(self, observation_space: Box, action_space: MultiDiscrete):
@@ -1190,6 +1201,18 @@ class TrainAgentEnv(BaseAgent, Env):
         # for unit in previous_world["main"]["team"]["units"]["all"]:
         #     if next((True for estimation in estimations if estimation == unit.location), False):
         #         reward += 0.2
+
+        reward += current_world["main"]["team"]["base"]["load"]
+        reward -= current_world["opponent"]["team"]["base"]["load"] / 2
+
+        diff_between_unit_counts = len(previous_world["main"]["team"]["units"]["all"]) - len(current_world["main"]["team"]["units"]["all"])
+        current_world["main"]["team"]["died_unit_count"] = abs(diff_between_unit_counts) if diff_between_unit_counts < 0 else 0
+        diff_between_unit_counts = len(previous_world["opponent"]["team"]["units"]["all"]) - len(current_world["opponent"]["team"]["units"]["all"])
+        current_world["opponent"]["team"]["died_unit_count"] = abs(diff_between_unit_counts) if diff_between_unit_counts < 0 else 0
+
+        reward += current_world["opponent"]["team"]["died_unit_count"] / 14
+        reward -= current_world["main"]["team"]["died_unit_count"] / 7
+
 
         """# Gold Collection
         for unit in previous_world["main"]["team"]["units"]["trucks"]:
@@ -1248,7 +1271,7 @@ class TrainAgentEnv(BaseAgent, Env):
 
         self.__reward += reward
         # print(f"{self.__reward:0.4f}, {reward:0.4f}")
-        return self._flat_state_2(self.__state), reward, done, {}
+        return self._flat_state_2(self.__state), self.__reward, done, {}
 
     def render(self,):
         return None
@@ -1257,7 +1280,7 @@ class TrainAgentEnv(BaseAgent, Env):
         return None
 
 
-class EvaluationAgent(BaseAgent):
+class EvaluationAgent(Agent):
     """An example agent which shares the same learning infrastructure as
     the full-fledged benchmarks, but implements random action selection."""
 
@@ -1270,10 +1293,6 @@ class EvaluationAgent(BaseAgent):
 
     def __init__(self, observation_space_or_team_index: any, action_space_or_action_length: any):
         super().__init__()
-        # self.observation_space = observation_space
-        # self.action_space = action_space
-        self._ASL_LENGTH: int = 3
-
         if isinstance(observation_space_or_team_index, int):
             main_team_index = observation_space_or_team_index
             opponent_team_index = 1 - observation_space_or_team_index
@@ -1282,7 +1301,7 @@ class EvaluationAgent(BaseAgent):
             self._world = World(0, 1)
 
         self.__a2c = A2C.load(
-            ".\\models\\v1\\TrainSingleTruckLarge_2240000_steps")
+            ".\\models\\v1\\TrainSingleMixedLarge_4000_steps")
         self.observation_space = self.__a2c.observation_space
         self.action_space = self.__a2c.action_space
 
@@ -1291,20 +1310,12 @@ class EvaluationAgent(BaseAgent):
 
     def act(self, state: dict[str, any]):
         self._set_ready_to_action(state)
-        action, *_ = self.__a2c.predict(self._flat_state_2(state))
-        pre_estimations = [action[i:i+self._ASL_LENGTH] for i in range(0, len(action[:-1]), self._ASL_LENGTH)][::-1]
-        estimations: list[dict[str, any]] = []
-        for pre_estimation in pre_estimations:
-            direction, Y, X = pre_estimation
-            estimations.append({
-                "direction": direction,
-                "offset": (Y - 1, X - 1)
-            })
-
-        recruitment = action[-1]
+        actions, *_ = self.__a2c.predict(self._flat_state_2(state))
+        estimations = actions[:-1]
+        recruitment = actions[-1]
         return self._action(estimations, recruitment)
 
-class RandomAgent(BaseAgent):
+class RandomAgent(Agent):
     def __init__(self, index: int, action_length: int = ACTION_LENGTH):
         super().__init__()
         self.action_length = ACTION_LENGTH

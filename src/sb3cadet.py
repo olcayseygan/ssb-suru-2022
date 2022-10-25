@@ -80,7 +80,7 @@ if __name__ == "__main__":
 
         env = SubprocVecEnv([lambda: TrainAgentEnv(args, agents)
                              for i in range(hyperparam["env"]["n_envs"])])
-        checkpoint_callback = CheckpointCallback(save_freq=10000, save_path=f'./models/{args.version}',
+        checkpoint_callback = CheckpointCallback(save_freq=1000, save_path=f'./models/{args.version}',
                                                  name_prefix=args.prefix)
 
         model = A2C(env=env,
