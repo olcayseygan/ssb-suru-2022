@@ -79,8 +79,20 @@ def get_distance_between_two_locations(source: tuple[int, int], target: tuple[in
     target[0] -= (target[1] + 1) // 2
     return (abs(source[0] - target[0]) + abs(source[1] - target[1]) + abs(source[0] + source[1] - target[0] - target[1])) // 2
 
+class AStarNode:
+    def __init__(self) -> None:
+        self.goal: int = 0
+        self.fring: int = 0
+        self.heuristic: float = 0
+        self.previous: "AStarNode" = None
 
-class Tile:
+    def reset_GFH(self) -> None:
+        self.goal = 0
+        self.fring = 0
+        self.heuristic = 0
+        self.previous = None
+
+class Tile(AStarNode):
     class TAGS(Enum):
         GRASS = 0
         DIRT = 1
@@ -91,26 +103,14 @@ class Tile:
     IS_STICKY: bool = False
 
     def __init__(self) -> None:
+        super().__init__()
         self.tag = None
         self.neighbors: dict[int, Tile] = {}
         self.has_resource = False
         self.has_base = False
+        self.base: "Base" = None
         self.location: tuple[int, int] = (-1, -1)
         self.unit: "Unit" = None
-
-        self.a_star = {
-            "f": 0,
-            "g": 0,
-            "h": 0,
-            "previous": None
-        }
-
-    def can_move(self, unit: "Unit", world: "World") -> bool:
-        if unit.tag is Unit.TAGS.HEAVY_TANK and self.IS_STICKY:
-            return False
-
-        if unit.tag is not Unit.TAGS.DRONE and not self.IS_MOVEABLE:
-            return False
 
     def distance_to(self, other: "Tile") -> int:
         if other is None:
@@ -459,14 +459,24 @@ class DroneUnit(AttackerUnit):
 
 
 class Base:
-    def __init__(self, location: tuple[int, int], load: int) -> None:
-        self.location: tuple[int, int] = location
-        self.load: int = load
-        self.tile: Tile = None
-        self.trained: bool = False
+    def __init__(self) -> None:
+        self._location: tuple[int, int] = None
+        self._tile: Tile = None
+        self.load: int = 0
 
-    def train(self):
-        self.trained = True
+    @property
+    def location(self) -> tuple[int, int]:
+        return self._location
+
+    @property
+    def tile(self) -> Tile:
+        return self._tile
+
+    @tile.setter
+    def tile(self, tile: Tile) -> None:
+        tile.base = self
+        self._location = tile.location
+        self._tile = tile
 
 
 class Team:
@@ -580,73 +590,92 @@ class World:
         self.opponent_team.units.clear()
         self.reserved_tiles.clear()
 
-    def __find_path(self, unit: Unit, open_set, closed_set, target: Tile):
-        if len(open_set) == 0:
-            return []
+    def __find_path(self, unit: Unit, goal_tile: Tile):
+        open_set: list[Tile] = [self.__terrain.tiles[unit.location[0]][unit.location[1]]]
+        closed_set: list[Tile] = []
 
-        current = min(open_set, key=lambda set: set.a_star["f"], default=open_set[0])
-        # done: bool = False
-        # if unit.tag is Unit.TAGS.TRUCK:
-        #     if current is target:
-        #         done = True
-        # else:
-        #     if target.unit is None:
-        #         done = True
-        #     elif unit.tile.distance_to(target) <= 2:
-        #         done = True
-        #         target = current
+        while len(open_set) != 0:
+            current_tile = min(open_set, key=lambda node: node.fring, default=open_set[0])
+            if current_tile is goal_tile:
+                path: list[Tile] = []
+                node: Tile = goal_tile
+                while (node.previous is not None):
+                    path.append(node)
+                    node = node.previous
 
-        if current is target:
-            path = []
-            cell = target
-            while (cell.a_star["previous"] is not None):
-                path.append(cell)
-                cell = cell.a_star["previous"]
+                [node_.reset_GFH() for node_ in set(closed_set + open_set)]
+                return path[::-1]
 
-            for tile in set(closed_set + open_set):
-                tile.a_star["f"] = 0
-                tile.a_star["g"] = 0
-                tile.a_star["h"] = 0
-                tile.a_star["previous"] = None
+            open_set.remove(current_tile)
+            closed_set.append(current_tile)
 
-            return path[::-1]
+            neighbors = {direction: neighbor for direction, neighbor in current_tile.neighbors.items() if neighbor not in closed_set}
+            if goal_tile in neighbors.values():
+                neighbors[goal_tile.direction] = goal_tile
 
-        open_set.remove(current)
-        closed_set.append(current)
-
-        neighbors = self.get_tiles_with_their_directions(unit, current)
-        for direction, neighbor in current.neighbors.items():
-            if neighbor is target:
-                neighbors[direction] = target
-                break
-
-        for neighbor in neighbors.values():
-            if neighbor in closed_set:
-                continue
-
-            g = current.a_star["g"] + get_distance_between_two_locations(current.location, neighbor.location) * (10 if neighbor.tag == Tile.TAGS.MOUNTAIN else 1)
-            is_pathable = False
-            if neighbor in open_set:
-                if g < neighbor.a_star["g"]:
-                    neighbor.a_star["g"] = g
+            for neighbor in neighbors.values():
+                g = current_tile.goal + get_distance_between_two_locations(current_tile.location, neighbor.location) * (10 if neighbor.tag == Tile.TAGS.MOUNTAIN else 1)
+                is_pathable = False
+                if neighbor in open_set:
+                    if g < neighbor.goal:
+                        neighbor.goal = g
+                        is_pathable = True
+                else:
+                    neighbor.goal = g
                     is_pathable = True
-            else:
-                neighbor.a_star["g"] = g
-                is_pathable = True
-                open_set.append(neighbor)
+                    open_set.append(neighbor)
 
-            if is_pathable:
-                neighbor.a_star["h"] = get_distance_between_two_locations(neighbor.location, target.location)
-                neighbor.a_star["f"] = neighbor.a_star["g"] + neighbor.a_star["h"]
-                neighbor.a_star["previous"] = current
+                if is_pathable:
+                    neighbor.heuristic = get_distance_between_two_locations(current_tile.location, goal_tile.location)
+                    neighbor.fring = neighbor.goal + neighbor.heuristic
+                    neighbor.previous = current_tile
 
-        return self.__find_path(unit, open_set, closed_set, target)
+        return []
 
-    def find_path(self, unit: Unit, target: Tile) -> list[Tile]:
-        if unit.tile is target:
-            return []
+    def find_path(self, unit: Unit, goal_tile: Tile) -> list[Tile]:
+        open_set: list[Tile] = [unit.tile]
+        closed_set: list[Tile] = []
 
-        return self.__find_path(unit, [unit.tile], [], target)
+        while len(open_set) != 0:
+            current_tile = min(open_set, key=lambda node: node.fring, default=open_set[0])
+            if current_tile is goal_tile:
+                path: list[Tile] = []
+                node: Tile = goal_tile
+                while (node.previous is not None):
+                    path.append(node)
+                    node = node.previous
+
+                [node_.reset_GFH() for node_ in set(closed_set + open_set)]
+                return path[::-1]
+
+            open_set.remove(current_tile)
+            closed_set.append(current_tile)
+
+
+            neighbors = {direction: neighbor for direction, neighbor in self.get_tiles_with_their_directions(unit, current_tile) if neighbor not in closed_set}
+            for direction, neighbor in current_tile.neighbors.items():
+                if neighbor is goal_tile:
+                    neighbors[direction] = neighbor
+
+            for neighbor in neighbors.values():
+                g = current_tile.goal + get_distance_between_two_locations(current_tile.location, neighbor.location) * (10 if neighbor.tag == Tile.TAGS.MOUNTAIN else 1)
+                is_pathable = False
+                if neighbor in open_set:
+                    if g < neighbor.goal:
+                        neighbor.goal = g
+                        is_pathable = True
+                else:
+                    neighbor.goal = g
+                    is_pathable = True
+                    open_set.append(neighbor)
+
+                if is_pathable:
+                    neighbor.heuristic = get_distance_between_two_locations(current_tile.location, goal_tile.location)
+                    neighbor.fring = neighbor.goal + neighbor.heuristic
+                    neighbor.previous = current_tile
+
+        return []
+
 
     def get_tiles_with_their_directions(self, unit: Unit, tile: Tile = None) -> dict[int, Tile]:
         if tile is None:
@@ -905,8 +934,6 @@ class BaseAgent():
         world = self._world
         locations, movements, targets, = [], [], []
 
-        # NOTE:
-
         # needed variables
         main_team = world.main_team
         opponent_team = world.opponent_team
@@ -1047,23 +1074,38 @@ class BaseAgent():
         ]
 
     def __init__(self):
+        self._is_map_built: bool = False
         self._world: World
         self._state: dict[str, any]
         self.action_length: int = ACTION_LENGTH
         pass
 
-    def _set_ready_to_action(self, state: dict[str, any]) -> tuple[list[tuple[int, int]], list[int], list[tuple[int, int]], int]:
+    def _build_map(self, state: dict[str, any]):
+        if self._is_map_built:
+            return
+
         world = self._world
-        world.clear()
         decoded_state = self._decode_state(state)
         world.terrain = state["terrain"]
         world.resources = decoded_state[4]
+        main_team = self._world.main_team
+        main_team.base = Base()
+        base_y, base_x = decoded_state[main_team.index + 2]
+        main_team.base.tile = world.terrain.tiles[base_y][base_x]
+        opponent_team = self._world.opponent_team
+        opponent_team.base = Base()
+        base_y, base_x = decoded_state[opponent_team.index + 2]
+        opponent_team.base.tile = world.terrain.tiles[base_y][base_x]
+        self._is_map_built = True
+
+    def _set_ready_to_action(self, state: dict[str, any]) -> tuple[list[tuple[int, int]], list[int], list[tuple[int, int]], int]:
+        world = self._world
+        decoded_state = self._decode_state(state)
         scores = state["score"]
 
+        world.clear()
         # Main Team
         main_team = self._world.main_team
-        main_team.base = Base(
-            decoded_state[main_team.index + 2], int(scores[main_team.index]))
         for i, entity in enumerate(decoded_state[main_team.index]):
             [_, _, _, location, _] = entity.values()
             y, x = location
@@ -1073,14 +1115,8 @@ class BaseAgent():
             tile.unit = unit
             main_team.units.append(unit)
 
-        base_y, base_x = main_team.base.location
-        main_team.base.tile = world.terrain.tiles[base_y][base_x]
-        main_team.base.tile.has_base = True
-
         # Oppenent Team
         opponent_team = self._world.opponent_team
-        opponent_team.base = Base(
-            decoded_state[opponent_team.index + 2], int(scores[opponent_team.index]))
         for i, entity in enumerate(decoded_state[opponent_team.index]):
             [_, _, _, location, _] = entity.values()
             y, x = location
@@ -1089,10 +1125,6 @@ class BaseAgent():
             unit.tile = tile
             tile.unit = unit
             opponent_team.units.append(unit)
-
-        base_y, base_x = opponent_team.base.location
-        opponent_team.base.tile = world.terrain.tiles[base_y][base_x]
-        opponent_team.base.tile.has_base = True
 
 class TrainAgentEnv(BaseAgent, Env):
     def __world_to_dict(self, state: dict[str, any]) -> dict[str, any]:
@@ -1178,6 +1210,7 @@ class TrainAgentEnv(BaseAgent, Env):
         return self._flat_state_2(self.__state)
 
     def step(self, actions: np.ndarray):
+        self._build_map(self.__state)
         self.__previous_state = self.__state
         previous_world: dict[str, any] = self.__world_to_dict(self.__previous_state)
         estimations = actions[:-1]
