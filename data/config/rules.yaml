@@ -33,5 +33,5 @@ Terrain:
   mountain_risk: 0.25
   wreckage_time: 5
 Animation:
-  enabled: False
+  enabled: True
   speed: 10

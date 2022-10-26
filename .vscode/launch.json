@@ -12,7 +12,7 @@
       // "program": "src/agentsofglory.py",
       // "args": ["DemoMap", "EvaluationAgent", "EvaluationAgent", "--render"],
       "program": "src/sb3cadet.py",
-      "args": ["TrainSingleMixedLarge", "EvaluationAgent", "--render", "--version=v1", "--prefix=TrainSingleMixedLarge"],
+      "args": ["TrainSingleMixedLarge", "RandomAgent", "--render", "--version=v1", "--prefix=TrainSingleMixedLarge"],
       // "program": "src/test.py",
       // "args": ["--render"],
       "justMyCode": true
