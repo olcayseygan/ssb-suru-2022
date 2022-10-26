@@ -11,27 +11,6 @@ from stable_baselines3 import A2C
 
 from utilities import *
 
-
-class UNIT_TAGS(Enum):
-    TRUCK = "Truck"
-    LIGHT_TANK = "LightTank"
-    HEAVY_TANK = "HeavyTank"
-    DRONE = "Drone"
-
-
-UNIT_TAGS_BY_INDEX = {i: a.name for i, a in enumerate(UNIT_TAGS)}
-
-
-class TERRAIN_TAGS(Enum):
-    GRASS = 0
-    DIRT = 1
-    MOUNTAIN = 2
-    WATER = 3
-
-
-TERRAIN_TAGS_BY_INDEX = {i: a.name for i, a in enumerate(TERRAIN_TAGS)}
-
-
 DIRECTION_OFFSETS_EVEN: dict[int, tuple[int, int]] = {
     0: (0, 0),
     1: (-1, 0),
@@ -61,22 +40,6 @@ ACTION_LENGTH: int = 7
 def get_movement_offsets(location: tuple[int, int]) -> tuple[int, int]:
     return DIRECTION_OFFSETS[location[1] % 2]
 
-
-def calculate_location_by_offset(offset: int, location: tuple[int, int]) -> tuple[int, int]:
-    y, x = location
-    x_offset, y_offset = offset
-    return (y + y_offset, x + x_offset)
-
-
-def get_distance_between_two_locations(source: tuple[int, int], target: tuple[int, int]) -> int:
-    if source == None or target == None:
-        return -1
-
-    source = list(source)
-    target = list(target)
-    source[0] -= (source[1] + 1) // 2
-    target[0] -= (target[1] + 1) // 2
-    return (abs(source[0] - target[0]) + abs(source[1] - target[1]) + abs(source[0] + source[1] - target[0] - target[1])) // 2
 
 class AStarNode:
     def __init__(self) -> None:
@@ -116,7 +79,20 @@ class Tile(AStarNode):
         if target_tile is None:
             return 100
 
-        return get_distance_between_two_locations(self.location, target_tile.location)
+        source = list(self.location)
+        target = list(target_tile.location)
+        source[0] -= (source[1] + 1) // 2
+        target[0] -= (target[1] + 1) // 2
+        return (abs(source[0] - target[0]) + abs(source[1] - target[1]) + abs(source[0] + source[1] - target[0] - target[1])) // 2
+
+    def get_tile_by_offset(self, offset: tuple[int, int]) -> "Tile" or None:
+        y, x = self.location
+        x_offset, y_offset = offset
+        Y, X = y + y_offset, x + x_offset
+        if not (0 <= Y < self.world.height and 0 <= X < self.world.width):
+            return None
+
+        return self.world.terrain.tiles[Y][X]
 
     def find_path_to(self, goal_tile: "Tile") -> list["Tile"]:
         open_set: list[Tile] = [self]
@@ -137,26 +113,29 @@ class Tile(AStarNode):
 
             open_set.remove(current_tile)
             closed_set.append(current_tile)
-            # NOTE: Sıkışıp kaılıyor burda!!! Unit'in olduğu noktada dönüyor sürekli. Pismiş papatya gibi.
             neighbors = {direction: neighbor for direction, neighbor in current_tile.get_tiles_able_to_move(self.unit).items() if neighbor not in closed_set}
             for direction, neighbor in current_tile.neighbors.items():
                 if neighbor is goal_tile:
                     neighbors[direction] = neighbor
 
             for neighbor in neighbors.values():
-                g = current_tile.goal + get_distance_between_two_locations(current_tile.location, neighbor.location) * (10 if neighbor.tag == Tile.TAGS.MOUNTAIN else 1)
+                cost = current_tile.distance_to(neighbor)
+                if neighbor.tag is Tile.TAGS.MOUNTAIN:
+                    cost *= 10
+
+                goal = current_tile.goal + cost
                 is_pathable = False
                 if neighbor in open_set:
-                    if g < neighbor.goal:
-                        neighbor.goal = g
+                    if goal < neighbor.goal:
+                        neighbor.goal = goal
                         is_pathable = True
                 else:
-                    neighbor.goal = g
+                    neighbor.goal = goal
                     is_pathable = True
                     open_set.append(neighbor)
 
                 if is_pathable:
-                    neighbor.heuristic = get_distance_between_two_locations(current_tile.location, goal_tile.location)
+                    neighbor.heuristic = current_tile.distance_to(goal_tile)
                     neighbor.fring = neighbor.goal + neighbor.heuristic
                     neighbor.previous = current_tile
 
@@ -191,18 +170,19 @@ class Tile(AStarNode):
 
         return tiles
 
-    def get_tiles_able_to_move_in_distance(self, distance: int) -> list["Tile"]:
-        if tile is None:
-            tile = self.unit.tile
-
+    def get_tiles_able_to_move_in_distance(self, distance: int, can_have_resource: bool = True) -> list["Tile"]:
         def get_tiles(tile_: Tile, tiles: list[Tile] = []):
-            neigbors = self.get_tiles_able_to_move(self.unit, tile=tile_).values()
+            neigbors = tile_.get_tiles_able_to_move(self.unit).values()
             tiles_: list[Tile] = []
             for tile__ in neigbors:
+                if not can_have_resource:
+                    if tile__.has_resource:
+                        continue
+
                 if tile__ in tiles:
                     continue
 
-                distance_ = tile.distance_to(tile__)
+                distance_ = self.distance_to(tile__)
                 if distance < distance_:
                     continue
 
@@ -217,7 +197,7 @@ class Tile(AStarNode):
 
             return tiles_
 
-        return get_tiles(tile, [tile])
+        return get_tiles(self, [self])
 
     def get_direction_by_tile(self, tile: "Tile") -> int:
         for direction, neighbor in self.neighbors.items():
@@ -403,8 +383,16 @@ class AttackerUnit(Unit):
         world: "World" = self.tile.world
 
         is_there_any_attackable_unit: Unit = self.get_nearest_attackable_unit(self.tile.world.opponent_team.units) is not None
-        if not is_there_any_attackable_unit:
-            return self.move(world.opponent_team.base.tile)
+        all_heavy_tanks_are_on_dirt = all((unit.tile.tag is Tile.TAGS.DIRT for unit in self.tile.world.opponent_team.units if unit.tag is Unit.TAGS.HEAVY_TANK))
+        if not is_there_any_attackable_unit and all_heavy_tanks_are_on_dirt:
+            if not any((unit.tile is self.tile.world.opponent_team.base.tile for unit in world.main_team.units)):
+                return self.move(world.opponent_team.base.tile)
+            elif self.tile.has_resource:
+                tiles_able_to_move = self.tile.get_tiles_able_to_move_in_distance(2, False)
+                if len(tiles_able_to_move) != 0:
+                    return self.move(tiles_able_to_move[0])
+
+                return super().action()
 
         if attack_nearest_action:
             return self.attack_nearest_unit()
@@ -505,6 +493,7 @@ class TruckUnit(Unit):
     def return_to_base(self) -> tuple[tuple[int, int], int,  tuple[int, int]]:
         return self.move(self.tile.world.main_team.base.tile)
 
+    # TODO: bazen donup kalıyorlar, nedenini bulamadım.
     def action(self, action_type: int) -> tuple[tuple[int, int], int,  tuple[int, int]]:
         action_space = [False for _ in range(3)]
         action_space[action_type] = True
@@ -520,15 +509,16 @@ class TruckUnit(Unit):
         if self.is_on_base() and self.has_load():
             return self.deliver_resource()
 
-        if deliver_action:
-            if self.has_load():
+        if 0 < len(self.tile.world.opponent_team.units):
+            if deliver_action:
+                if self.has_load():
+                    return self.return_to_base()
+
+            if call_bell_action:
                 return self.return_to_base()
 
-        if call_bell_action:
-            return self.return_to_base()
-
         if self.has_space():
-            if self.has_load() and self.tile.distance_to(world.main_team.base.tile) < self.tile.distance_to(self.tile.get_nearest_resource_tile()):
+            if self.has_load() and self.tile.distance_to(world.main_team.base.tile) <= self.tile.distance_to(self.tile.get_nearest_resource_tile()):
                 return self.return_to_base()
 
             return self.move_to_resource()
@@ -552,13 +542,12 @@ class DroneUnit(AttackerUnit):
 
 class Base:
     def __init__(self) -> None:
-        self._location: tuple[int, int] = None
         self._tile: Tile = None
         self.load: int = 0
 
     @property
     def location(self) -> tuple[int, int]:
-        return self._location
+        return self._tile.location
 
     @property
     def tile(self) -> Tile:
@@ -567,7 +556,6 @@ class Base:
     @tile.setter
     def tile(self, tile: Tile) -> None:
         tile.base = self
-        self._location = tile.location
         self._tile = tile
 
 
@@ -576,9 +564,6 @@ class Team:
         self.index: int = index
         self.units: list[Unit] = []
         self.base: Base = None
-
-    def find_unit(self, location: tuple[int, int]) -> Unit:
-        return next((unit for unit in self.units if unit.location == location), None)
 
 
 class Terrain:
@@ -643,11 +628,10 @@ class World:
                 tile = tiles[y][x]
                 coordinate: tuple[int, int] = (y, x)
                 for direction, offset in get_movement_offsets(coordinate).items():
-                    Y, X = calculate_location_by_offset(offset, coordinate)
-                    if not (0 <= Y < self.height and 0 <= X < self.width):
+                    neighbor = tile.get_tile_by_offset(offset)
+                    if neighbor is None:
                         continue
 
-                    neighbor = tiles[Y][X]
                     if tile is neighbor:
                         continue
 
@@ -657,10 +641,6 @@ class World:
         self.terrain.set_resource_tiles(resources_locations)
 
     @property
-    def size(self) -> tuple[int, int]:
-        return self.height, self.width
-
-    @property
     def units(self) -> list[Unit]:
         return self.main_team.units + self.opponent_team.units
 
@@ -668,6 +648,8 @@ class World:
         self.main_team.units.clear()
         self.opponent_team.units.clear()
         self.reserved_tiles.clear()
+        for tile in self.terrain.flatten():
+            tile.unit = None
 
     @staticmethod
     def generate_random_world_config(height, width) -> np.ndarray:
@@ -1011,10 +993,12 @@ class Agent():
         main_team.base = Base()
         base_y, base_x = decoded_state[main_team.index + 2]
         main_team.base.tile = world.terrain.tiles[base_y][base_x]
+        main_team.base.tile.has_base = True
         opponent_team = self._world.opponent_team
         opponent_team.base = Base()
         base_y, base_x = decoded_state[opponent_team.index + 2]
         opponent_team.base.tile = world.terrain.tiles[base_y][base_x]
+        opponent_team.base.tile.has_base = True
         self._is_map_built = True
 
     def _set_ready_to_action(self, state: dict[str, any]) -> tuple[list[tuple[int, int]], list[int], list[tuple[int, int]], int]:
