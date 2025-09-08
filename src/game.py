@@ -87,6 +87,8 @@ class Game:
         if self.render:
             self.explosion_animation = ExplosionAnimation()
         self.max_turn = self.config['max_turn']
+        self.agents.append(self.agents_classes[0])
+        self.agents.append(self.agents_classes[1])
         self.reset()
 
     def step(self, action):
@@ -284,7 +286,9 @@ class Game:
                 state = self.gmap.getState(self.all_ubr)
                 if not self.game_over and not type(self.agents[self.go_team]) is self.human_class:
                     # signal.alarm(2)
-                    action = self.agents[self.go_team].action(state)
+                    agent = self.agents[self.go_team]
+                    a = hasattr(agent, 'action')
+                    action = agent.action(agent, observation=state)
                     # try:
                     # except:
                     #     # print("Agent did not return action in time")

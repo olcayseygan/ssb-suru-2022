@@ -15,12 +15,26 @@
       "args": [
         "TrainSingleTruckSmall",
         "RandomAgent",
-        "--render",
+        // "--render",
         "--version=v1",
         "--prefix=RiskyValley"
       ],
       // "program": "src/test.py",
       // "args": ["--render"],
+      "justMyCode": true
+    },
+    {
+      "name": "Lets Roll",
+      "type": "debugpy",
+      "request": "launch",
+      "console": "integratedTerminal",
+      "program": "src/agentsofglory.py",
+      "args": [
+        "TrainSingleTruckSmall",
+        "SmartAgent",
+        "SmartAgent",
+        "--render"
+      ],
       "justMyCode": true
     }
   ]

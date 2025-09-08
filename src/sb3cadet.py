@@ -47,6 +47,6 @@ if __name__ == "__main__":
 
         env = SubprocVecEnv([lambda: TrainAgentEnv(args, agents) for i in range(hyperparam["env"]["n_envs"])]) # type: ignore
         checkpoint_callback = CheckpointCallback(save_freq=1000, save_path=f'./models/{args.version}', name_prefix=args.prefix)
-        model = A2C(env=env, verbose=1, tensorboard_log="logs", **hyperparam["agent"])
+        model = A2C(env=env, verbose=1, tensorboard_log="logs", device="cuda", **hyperparam["agent"])
         model.learn(callback=[checkpoint_callback], tb_log_name=args.prefix, **hyperparam["learn"])
         model.save(f"./models/{args.prefix}")

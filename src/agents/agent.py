@@ -267,6 +267,10 @@ class Unit:
         if not self.location:
             return self.do_nothing()
 
+        available_tiles = self.tile.get_tiles_able_to_move(self)
+        if movement not in available_tiles:
+            return self.do_nothing()
+
         return (self.location, movement, target_tile.location)
 
 
@@ -561,6 +565,79 @@ class World:
 
 
 class Agent():
+    def __init__(self, kwargs: Namespace, agents: list[str]) -> None:
+        self._kwargs = kwargs
+        self._is_map_built: bool = False
+        self._state: Dict[str, Any] = {}
+        self._world: Optional["World"] = None
+        self._game = Game(kwargs, agents)
+        self.action_length: int = ACTION_LENGTH
+
+    def _world_to_dict(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        world = self._world
+        if not world:
+            return {}
+
+        if not world.main_team.base or not world.opponent_team.base:
+            return {}
+
+        self._set_ready_to_action(state)
+        return {
+            "resources" : world.resources,
+            "main": {
+                "team": {
+                    "base": {
+                        "load": world.main_team.base.load,
+                        "trained_unit": False
+                    },
+                    "units": {
+                        "all": [unit for unit in world.main_team.units],
+                        "trucks": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.TRUCK],
+                        "heavy_tanks": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.HEAVY_TANK],
+                        "light_tanks": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.LIGHT_TANK],
+                        "drones": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.DRONE],
+                    },
+                    "killed_unit_count": 0,
+                    "died_unit_count": 0,
+                }
+            },
+            "opponent": {
+                "team": {
+                    "base": {
+                        "load": world.opponent_team.base.load,
+                        "trained_unit": False
+                    },
+                    "units": {
+                        "all": [unit for unit in world.opponent_team.units],
+                        "trucks": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.TRUCK],
+                        "heavy_tanks": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.HEAVY_TANK],
+                        "light_tanks": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.LIGHT_TANK],
+                        "drones": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.DRONE],
+                    },
+                    "killed_unit_count": 0,
+                    "died_unit_count": 0,
+                }
+            }
+        }
+
+    def _generate_world_config(self) -> Dict[str, Any]:
+        import os
+        import yaml
+        height, width = self._game.map_y, self._game.map_x
+        map_name = getattr(self._kwargs, 'map', 'Random')
+        if map_name != 'Random':
+            config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'config', f'{map_name}.yaml')
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+                self._game.config = config
+            else:
+                # Dosya yoksa random harita oluştur
+                self._game.config = World.generate_random_world_config(height, width)
+        else:
+            self._game.config = World.generate_random_world_config(height, width)
+        return self._game.reset()
+
     def _create_unit(self, entity: Dict[str, Any]) -> Unit:
         [_, tag, hp, location, load] = entity.values()
         if tag == Unit.TAGS.HEAVY_TANK.value:
@@ -696,12 +773,6 @@ class Agent():
             *terrain.flatten()
         ]
 
-    def __init__(self):
-        self._is_map_built: bool = False
-        self._state: Dict[str, Any] = {}
-        self._world: Optional["World"] = None
-        self.action_length: int = ACTION_LENGTH
-
     def _build_map(self, state: Dict[str, Any], force: bool = False):
         if not force and self._is_map_built:
             return
@@ -753,69 +824,16 @@ class Agent():
             unit.tile = tile
             opponent_team.units.append(unit)
 
+    def action(self, observation: Dict[str, Any]):
+        raise NotImplementedError()
 
 class TrainAgentEnv(Agent, Env):
-    def __world_to_dict(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        world = self._world
-        if not world:
-            return {}
-
-        if not world.main_team.base or not world.opponent_team.base:
-            return {}
-
-        self._set_ready_to_action(state)
-        return {
-            "resources" : world.resources,
-            "main": {
-                "team": {
-                    "base": {
-                        "load": world.main_team.base.load,
-                        "trained_unit": False
-                    },
-                    "units": {
-                        "all": [unit for unit in world.main_team.units],
-                        "trucks": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.TRUCK],
-                        "heavy_tanks": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.HEAVY_TANK],
-                        "light_tanks": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.LIGHT_TANK],
-                        "drones": [unit for unit in world.main_team.units if unit.tag == Unit.TAGS.DRONE],
-                    },
-                    "killed_unit_count": 0,
-                    "died_unit_count": 0,
-                }
-            },
-            "opponent": {
-                "team": {
-                    "base": {
-                        "load": world.opponent_team.base.load,
-                        "trained_unit": False
-                    },
-                    "units": {
-                        "all": [unit for unit in world.opponent_team.units],
-                        "trucks": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.TRUCK],
-                        "heavy_tanks": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.HEAVY_TANK],
-                        "light_tanks": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.LIGHT_TANK],
-                        "drones": [unit for unit in world.opponent_team.units if unit.tag == Unit.TAGS.DRONE],
-                    },
-                    "killed_unit_count": 0,
-                    "died_unit_count": 0,
-                }
-            }
-        }
-
-    def __generate_world_config(self) -> Dict[str, Any]:
-        height, width =  self.__game.map_y, self.__game.map_x
-        self.__game.config = World.generate_random_world_config(height, width)
-        # self.__game.max_turn = self.__game.config["max_turn"]
-        # self.__game.turn_timer = self.__game.config["turn_timer"]
-        return self.__game.reset()
-
-    def __init__(self, kwargs: Namespace, agents: list[str]) -> None:
-        super().__init__()
+    def __init__(self, kwargs: Namespace, agents: List[str]) -> None:
+        super().__init__(kwargs=kwargs, agents=agents)
         self.__previous_state: Dict[str, Any] = {}
         self.__reward: float = 0.0
-        self.__game = Game(kwargs, agents)
         self.__state: Dict[str, Any] = {}
-        height, width =  self.__game.map_y, self.__game.map_x
+        height, width =  self._game.map_y, self._game.map_x
         self._world = World(0, 1)
         length = height * width
         self.observation_space = Box(
@@ -835,34 +853,60 @@ class TrainAgentEnv(Agent, Env):
 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[List[int], Dict[str, Any]]: # type: ignore
         super().reset(seed=seed, options=options)
-        self.__state = self.__generate_world_config()
+        self.__state = self._generate_world_config()
         self._build_map(self.__state, True)
-        self.__reward = 0.0
         return self._flat_state_2(self.__state), {}
 
     def step(self, actions: npt.NDArray[np.int8]) -> Tuple[List[int], float, bool, bool, Dict[str, Any]]: # type: ignore
         self._build_map(self.__state)
         self.__previous_state = self.__state
-        previous_world: Dict[str, Any] = self.__world_to_dict(self.__previous_state)
+        previous_world: Dict[str, Any] = self._world_to_dict(self.__previous_state)
         estimations: List[List[int]] = np.array([actions[i:i+2] for i in range(0, len(actions[:-1]), 2)], dtype=np.int8).tolist()
         recruitment = actions[-1]
-        self.__state, _, done = self.__game.step(self._action(estimations, recruitment))
-        current_world: Dict[str, Any] = self.__world_to_dict(self.__state)
+        self.__state, _, done = self._game.step(self._action(estimations, recruitment))
+        current_world: Dict[str, Any] = self._world_to_dict(self.__state)
 
+        # --- Yeni ödül sistemi ---
         reward = 0.0
-        reward += current_world["main"]["team"]["base"]["load"]
-        reward -= current_world["opponent"]["team"]["base"]["load"] / 2
 
-        diff_between_unit_counts = len(previous_world["main"]["team"]["units"]["all"]) - len(current_world["main"]["team"]["units"]["all"])
-        current_world["main"]["team"]["died_unit_count"] = abs(diff_between_unit_counts) if diff_between_unit_counts < 0 else 0
-        diff_between_unit_counts = len(previous_world["opponent"]["team"]["units"]["all"]) - len(current_world["opponent"]["team"]["units"]["all"])
-        current_world["opponent"]["team"]["died_unit_count"] = abs(diff_between_unit_counts) if diff_between_unit_counts < 0 else 0
+        # === Kaynak değişimi ===
+        prev_res = previous_world["main"]["team"]["base"]["load"]
+        curr_res = current_world["main"]["team"]["base"]["load"]
 
-        reward += current_world["opponent"]["team"]["died_unit_count"] / 14
-        reward -= current_world["main"]["team"]["died_unit_count"] / 7
+        reward += (curr_res - prev_res) * 0.1  # kaynak başına küçük ödül
 
-        self.__reward += reward
-        return self._flat_state_2(self.__state), self.__reward, done, False, {}
+        # === HP değişimleri ===
+        def hp_dict(units):
+            return {(u.location, u.tag): u.hp for u in units if u.location}
+
+        prev_main = hp_dict(previous_world["main"]["team"]["units"]["all"])
+        curr_main = hp_dict(current_world["main"]["team"]["units"]["all"])
+        prev_opp  = hp_dict(previous_world["opponent"]["team"]["units"]["all"])
+        curr_opp  = hp_dict(current_world["opponent"]["team"]["units"]["all"])
+
+        # Rakibe verilen hasar
+        opp_damage = sum(
+            max(0, prev_hp - curr_opp.get(key, 0))
+            for key, prev_hp in prev_opp.items()
+        )
+
+        # Kendi alınan hasar
+        main_damage = sum(
+            max(0, prev_hp - curr_main.get(key, 0))
+            for key, prev_hp in prev_main.items()
+        )
+
+        reward += opp_damage * 0.5
+        reward -= main_damage * 0.5
+
+        # === Unit ölümü ===
+        opp_deaths = sum(1 for key in prev_opp if key not in curr_opp)
+        main_deaths = sum(1 for key in prev_main if key not in curr_main)
+
+        reward += opp_deaths * 2.0    # düşman ölürse ekstra ödül
+        reward -= main_deaths * 2.0   # kendi ölürse ekstra ceza
+
+        return self._flat_state_2(self.__state), reward, done, False, {}
 
     def render(self,):
         return None
@@ -873,7 +917,7 @@ class TrainAgentEnv(Agent, Env):
 
 class RandomAgent(Agent):
     def __init__(self, index: int, action_length: int = ACTION_LENGTH):
-        super().__init__()
+        super().__init__(kwargs=Namespace(), agents=[])
         self.action_length = ACTION_LENGTH
         self._world = World(index, 1 - index)
 
@@ -910,3 +954,40 @@ class RandomAgent(Agent):
             targets.append(target)
 
         return (locations, movements, targets, random.randint(0, 4))
+
+
+
+class SmartAgent(Agent):
+    """An example agent which shares the same learning infrastructure as
+    the full-fledged benchmarks, but implements random action selection."""
+
+    # Private:
+    __a2c: A2C
+
+    # Public:
+    observation_space: Box
+    action_space: MultiDiscrete
+
+    def __init__(self, observation_space_or_team_index: Any, action_space_or_action_length: Any):
+        super().__init__(kwargs=Namespace(map="TrainSingleTruckSmall", render=True, gif=True, img=True), agents=[])
+        if isinstance(observation_space_or_team_index, int):
+            main_team_index = observation_space_or_team_index
+            opponent_team_index = 1 - observation_space_or_team_index
+            self._world = World(main_team_index, opponent_team_index)
+        else:
+            self._world = World(0, 1)
+
+        self.__a2c = A2C.load(r"models\RiskyValley.zip")
+        self.observation_space = self.__a2c.observation_space # type: ignore
+        self.action_space = self.__a2c.action_space # type: ignore
+
+    def action(self, observation: Dict[str, Any]):
+        return SmartAgent.act(self, observation)
+
+    def act(self, state: Dict[str, Any]):
+        Agent._build_map(self, state)
+        Agent._set_ready_to_action(self, state)
+        actions, *_ = self.__a2c.predict(self._flat_state_2(state)) # type: ignore
+        estimations: List[List[int]] = np.array([actions[i:i+2] for i in range(0, len(actions[:-1]), 2)], dtype=np.int8).tolist()
+        recruitment = actions[-1]
+        return self._action(estimations, recruitment)
