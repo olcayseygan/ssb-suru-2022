@@ -2,8 +2,7 @@ import argparse
 
 import yaml
 from stable_baselines3 import A2C
-from stable_baselines3.common import logger
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
 from agents.agent import TrainAgentEnv
@@ -40,55 +39,14 @@ args = parser.parse_args()
 agents = [None, args.agentRed]
 
 
-class LoggerCallback(BaseCallback):
-
-    def __init__(self, _format, log_on_start=None, suffix=""):
-        super().__init__()
-        self._format = _format
-        self.suffix = suffix
-        if log_on_start is not None and not isinstance(log_on_start, (list, tuple)):
-            log_on_start = tuple(log_on_start)
-        self.log_on_start = log_on_start
-
-    def _on_training_start(self) -> None:
-
-        _logger = self.globals["logger"].Logger.CURRENT
-        _dir = _logger.dir
-        log_format = logger.make_output_format(self._format, _dir, self.suffix)
-        _logger.output_formats.append(log_format)
-        if self.log_on_start is not None:
-            for pair in self.log_on_start:
-                _logger.record(*pair, ("tensorboard", "stdout"))
-
-    def _on_step(self) -> bool:
-        """
-        :return: (bool) If the callback returns False, training is aborted early.
-        """
-        return True
-
-
 if __name__ == "__main__":
     hyperparams = read_hypers()
 
     for agentsofglory in hyperparams:
         gamename, hyperparam = list(agentsofglory.items())[0]
 
-        loggcallback = LoggerCallback(
-            "json",
-            [("hypers", hyperparam)]
-        )
-
-        env = SubprocVecEnv([lambda: TrainAgentEnv(args, agents)
-                             for i in range(hyperparam["env"]["n_envs"])])
-        checkpoint_callback = CheckpointCallback(save_freq=1000, save_path=f'./models/{args.version}',
-                                                 name_prefix=args.prefix)
-
-        model = A2C(env=env,
-                    verbose=1,
-                    tensorboard_log="logs",
-                    **hyperparam["agent"])
-
-        model.learn(callback=[loggcallback, checkpoint_callback],
-                    tb_log_name=args.prefix,
-                    **hyperparam["learn"])
+        env = SubprocVecEnv([lambda: TrainAgentEnv(args, agents) for i in range(hyperparam["env"]["n_envs"])]) # type: ignore
+        checkpoint_callback = CheckpointCallback(save_freq=1000, save_path=f'./models/{args.version}', name_prefix=args.prefix)
+        model = A2C(env=env, verbose=1, tensorboard_log="logs", **hyperparam["agent"])
+        model.learn(callback=[checkpoint_callback], tb_log_name=args.prefix, **hyperparam["learn"])
         model.save(f"./models/{args.prefix}")
