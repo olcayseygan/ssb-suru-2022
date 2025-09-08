@@ -828,6 +828,24 @@ class Agent():
         raise NotImplementedError()
 
 class TrainAgentEnv(Agent, Env):
+
+    def action(self, observation: Dict[str, Any]):
+        # Bu fonksiyon RL ortamı için kullanılmaz, sadece Game içindeki step için gereklidir.
+        # Örnek olarak tüm birimler için hareketsiz (do_nothing) aksiyon döndürülüyor.
+        self._build_map(observation)
+        self._set_ready_to_action(observation)
+        world = self._world
+        locations, movements, targets = [], [], []
+        if not world:
+            return (locations, movements, targets, 0)
+        main_team = world.main_team
+        for unit in main_team.units:
+            if not unit.tile:
+                continue
+            locations.append(unit.location)
+            movements.append(0)  # hareketsiz
+            targets.append(unit.location)
+        return (locations, movements, targets, 0)
     def __init__(self, kwargs: Namespace, agents: List[str]) -> None:
         super().__init__(kwargs=kwargs, agents=agents)
         self.__previous_state: Dict[str, Any] = {}

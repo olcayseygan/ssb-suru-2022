@@ -14,8 +14,8 @@
       "program": "src/sb3cadet.py",
       "args": [
         "TrainSingleTruckSmall",
-        "RandomAgent",
-        // "--render",
+        "SmartAgent",
+        "--render",
         "--version=v1",
         "--prefix=RiskyValley"
       ],
